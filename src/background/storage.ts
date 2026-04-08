@@ -38,9 +38,11 @@ const waitForPendingPageMutations = async (pageKey: PageKey): Promise<void> => {
 
 const withPageMutationLock = async <T>(pageKey: PageKey, task: () => Promise<T>): Promise<T> => {
   const previousMutation = pageMutationQueues.get(pageKey) ?? Promise.resolve();
-  let releaseCurrentMutation: (() => void) | null = null;
+  let releaseCurrentMutation = (): void => undefined;
   const currentMutation = new Promise<void>((resolve) => {
-    releaseCurrentMutation = resolve;
+    releaseCurrentMutation = () => {
+      resolve();
+    };
   });
   const queuedMutation = previousMutation.catch(() => undefined).then(() => currentMutation);
   pageMutationQueues.set(pageKey, queuedMutation);
@@ -50,7 +52,7 @@ const withPageMutationLock = async <T>(pageKey: PageKey, task: () => Promise<T>)
   try {
     return await task();
   } finally {
-    releaseCurrentMutation?.();
+    releaseCurrentMutation();
 
     if (pageMutationQueues.get(pageKey) === queuedMutation) {
       pageMutationQueues.delete(pageKey);

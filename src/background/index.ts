@@ -14,6 +14,7 @@ import {
   deleteNote,
   deleteAnnotation,
   flushPendingInserts,
+  getPageRecord,
   getOrCreatePageRecord,
   saveDocument,
   upsertAnnotation,
@@ -95,8 +96,10 @@ const getActivePageRecord = async (): Promise<{ pageRecord: PageRecord | null; t
     };
   }
 
+  const existingPageRecord = await getPageRecord(page.key);
+
   return {
-    pageRecord: await getOrCreatePageRecord(page),
+    pageRecord: existingPageRecord ?? (await getOrCreatePageRecord(page)),
     tabId: activeTab.id
   };
 };
@@ -290,7 +293,6 @@ const handleBackgroundMessage = async (
 
     case "panel/save-document": {
       const pageRecord = await saveDocument(message.payload.pageKey, message.payload.markdown);
-      await broadcastActivePage();
       return {
         ok: true,
         reason: pageRecord ? undefined : "No page record found for the requested document."
@@ -299,7 +301,6 @@ const handleBackgroundMessage = async (
 
     case "panel/flush-pending": {
       await flushPendingInserts(message.payload.pageKey, message.payload.noteIds);
-      await broadcastActivePage();
       return { ok: true };
     }
 
