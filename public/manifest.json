@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "WebNote",
+  "description": "Capture quotes from the web and write notes in a side panel.",
+  "version": "0.1.0",
+  "permissions": [
+    "contextMenus",
+    "sidePanel",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "action": {
+    "default_title": "Open WebNote"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "commands": {
+    "capture-selection": {
+      "description": "Capture the current selection into WebNote",
+      "suggested_key": {
+        "default": "Alt+Shift+A"
+      }
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

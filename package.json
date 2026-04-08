@@ -1,0 +1,21 @@
+{
+  "name": "webnote-edge-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node ./scripts/build.mjs --watch",
+    "build": "node ./scripts/build.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "vditor": "^3.11.2"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.39",
+    "@types/node": "^24.10.1",
+    "typescript": "^6.0.2",
+    "vite": "^8.0.7"
+  },
+  "packageManager": "pnpm@9.14.2+sha1.5202b50ab92394b3c922d2e293f196e2df6d441b"
+}

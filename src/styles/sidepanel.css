@@ -1,0 +1,126 @@
+:root {
+  color-scheme: light;
+  font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: #ffffff;
+}
+
+body {
+  color: #1f2937;
+}
+
+.app-shell,
+.editor-surface,
+.editor-host {
+  min-height: 100vh;
+  background: #ffffff;
+}
+
+.editor-host .vditor {
+  height: 100vh;
+  border: 0;
+  box-shadow: none;
+}
+
+.editor-host .vditor-toolbar {
+  display: none;
+}
+
+.editor-host .vditor-content,
+.editor-host .vditor-ir {
+  min-height: 100vh;
+}
+
+.editor-host .vditor-ir {
+  padding: 10px 12px 80px;
+}
+
+.editor-host .vditor-ir__node,
+.editor-host .vditor-ir pre,
+.plain-editor {
+  width: min(100%, 720px);
+  margin: 0 auto;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1.85;
+  letter-spacing: 0.01em;
+}
+
+.editor-host .vditor-ir__node+.vditor-ir__node {
+  margin-top: 0.45rem;
+}
+
+.editor-host .vditor-ir__node[data-type="heading"] {
+  margin-top: 1.2rem;
+}
+
+.editor-host .vditor-ir__node[data-type="heading"]:first-child {
+  margin-top: 0;
+}
+
+.editor-host .vditor-ir__preview {
+  min-height: 0;
+}
+
+.editor-host .vditor-ir__marker {
+  opacity: 0.12;
+  color: #64748b;
+}
+
+.editor-host .vditor-ir__node--expand .vditor-ir__marker--heading {
+  margin-right: 0.35rem;
+}
+
+.editor-host .vditor-ir h1,
+.editor-host .vditor-ir h2,
+.editor-host .vditor-ir h3,
+.editor-host .vditor-ir h4,
+.editor-host .vditor-ir h5,
+.editor-host .vditor-ir h6,
+.editor-host .vditor-ir p,
+.editor-host .vditor-ir blockquote,
+.editor-host .vditor-ir li {
+  margin: 0;
+}
+
+.editor-host .vditor-ir h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.editor-host .vditor-ir h2 {
+  font-size: 1.6rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.editor-host .vditor-ir h3 {
+  font-size: 1.32rem;
+  font-weight: 650;
+}
+
+.plain-editor {
+  display: block;
+  min-height: 100vh;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: #ffffff;
+  color: #1f2937;
+  padding: 12px 12px 80px;
+  font-family: inherit;
+}
+
+.plain-editor::placeholder {
+  color: #9ca3af;
+}
