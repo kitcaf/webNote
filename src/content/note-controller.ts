@@ -1,4 +1,8 @@
 import type { BasicResponse, RuntimeMessage } from "../shared/protocol";
+import {
+  HIGHLIGHT_CAPTURE_DEBOUNCE_MS,
+  HIGHLIGHT_CAPTURE_DEDUPE_WINDOW_MS
+} from "../shared/constants";
 import { createNoteEntity } from "../shared/serialization";
 import type {
   LiveAnchor,
@@ -10,7 +14,7 @@ import type {
 import { AnchorEngine, createLiveAnchor } from "./anchoring";
 import { HighlightHitIndex } from "./highlight-hit-index";
 import { HighlightController } from "./highlights";
-import { captureSelection } from "./selection";
+import { captureSelection, type CapturedSelection } from "./selection";
 
 interface CreateNoteOptions {
   enqueueInsert: boolean;
@@ -38,13 +42,20 @@ export class NoteController {
   private readonly highlightHitIndex = new HighlightHitIndex();
   private readonly noteEntities = new Map<string, NoteEntity>();
   private readonly liveAnchors = new Map<string, LiveAnchor>();
-  private isHighlightCaptureQueued = false;
+  private highlightCaptureTimer: number | null = null;
+  private lastHighlightSelectionSignature: string | null = null;
+  private lastHighlightSelectionTimestamp = 0;
 
   constructor(private readonly options: NoteControllerOptions) {
     this.anchorEngine = new AnchorEngine(options.pageRoot);
   }
 
   dispose(): void {
+    if (this.highlightCaptureTimer !== null) {
+      window.clearTimeout(this.highlightCaptureTimer);
+      this.highlightCaptureTimer = null;
+    }
+
     this.anchorEngine.disconnect();
     this.highlightHitIndex.dispose();
   }
@@ -77,14 +88,53 @@ export class NoteController {
     this.refreshPresentation();
   }
 
-  async createFromLiveSelection(options: CreateNoteOptions): Promise<BasicResponse> {
-    const capturedSelection = captureSelection(this.options.pageRoot);
+  private buildSelectionSignature(capturedSelection: CapturedSelection): string {
+    return [
+      capturedSelection.selectors.position.start,
+      capturedSelection.selectors.position.end,
+      capturedSelection.quoteText
+    ].join(":");
+  }
 
-    if (!capturedSelection) {
-      return {
-        ok: false,
-        reason: "No active text selection was found."
-      };
+  private hasMatchingHighlight(capturedSelection: CapturedSelection): boolean {
+    return [...this.noteEntities.values()].some((noteEntity) => {
+      if (noteEntity.kind !== "highlight") {
+        return false;
+      }
+
+      return (
+        noteEntity.quoteText === capturedSelection.quoteText &&
+        noteEntity.selectors.position.start === capturedSelection.selectors.position.start &&
+        noteEntity.selectors.position.end === capturedSelection.selectors.position.end
+      );
+    });
+  }
+
+  private shouldSkipHighlightCapture(capturedSelection: CapturedSelection): boolean {
+    const selectionSignature = this.buildSelectionSignature(capturedSelection);
+
+    if (this.hasMatchingHighlight(capturedSelection)) {
+      return true;
+    }
+
+    return (
+      this.lastHighlightSelectionSignature === selectionSignature &&
+      Date.now() - this.lastHighlightSelectionTimestamp < HIGHLIGHT_CAPTURE_DEDUPE_WINDOW_MS
+    );
+  }
+
+  private markHighlightCapture(selectionSignature: string): void {
+    this.lastHighlightSelectionSignature = selectionSignature;
+    this.lastHighlightSelectionTimestamp = Date.now();
+  }
+
+  private async createFromCapturedSelection(
+    capturedSelection: CapturedSelection,
+    options: CreateNoteOptions
+  ): Promise<BasicResponse> {
+    if (options.kind === "highlight" && this.shouldSkipHighlightCapture(capturedSelection)) {
+      this.clearBrowserSelection();
+      return { ok: true };
     }
 
     const noteEntity = createNoteEntity({
@@ -114,24 +164,50 @@ export class NoteController {
     if (!response.ok) {
       this.noteEntities.delete(noteEntity.id);
       this.liveAnchors.delete(noteEntity.id);
-      this.refreshPresentation();
+
+      if (noteEntity.kind === "highlight") {
+        this.highlightHitIndex.remove(noteEntity.id);
+      }
+
+      this.highlightController.remove(noteEntity.id);
       return response;
+    }
+
+    if (noteEntity.kind === "highlight") {
+      this.markHighlightCapture(this.buildSelectionSignature(capturedSelection));
     }
 
     this.clearBrowserSelection();
     return response;
   }
 
-  queueHighlightCapture(): void {
-    if (this.isHighlightCaptureQueued) {
-      return;
+  async createFromLiveSelection(options: CreateNoteOptions): Promise<BasicResponse> {
+    const capturedSelection = captureSelection(this.options.pageRoot);
+
+    if (!capturedSelection) {
+      return {
+        ok: false,
+        reason: "No active text selection was found."
+      };
     }
 
-    this.isHighlightCaptureQueued = true;
-    window.requestAnimationFrame(() => {
-      this.isHighlightCaptureQueued = false;
+    return this.createFromCapturedSelection(capturedSelection, options);
+  }
 
-      void this.createFromLiveSelection({
+  queueHighlightCapture(): void {
+    if (this.highlightCaptureTimer !== null) {
+      window.clearTimeout(this.highlightCaptureTimer);
+    }
+
+    this.highlightCaptureTimer = window.setTimeout(() => {
+      this.highlightCaptureTimer = null;
+      const capturedSelection = captureSelection(this.options.pageRoot);
+
+      if (!capturedSelection) {
+        return;
+      }
+
+      void this.createFromCapturedSelection(capturedSelection, {
         enqueueInsert: false,
         kind: "highlight",
         openSidePanel: false
@@ -140,7 +216,7 @@ export class NoteController {
           console.error("WebNote failed to create a highlight.", response.reason);
         }
       });
-    });
+    }, HIGHLIGHT_CAPTURE_DEBOUNCE_MS);
   }
 
   findHighlightNoteAtPoint(clientX: number, clientY: number): NoteEntity | null {
@@ -164,7 +240,8 @@ export class NoteController {
 
     this.noteEntities.delete(noteId);
     this.liveAnchors.delete(noteId);
-    this.refreshPresentation();
+    this.highlightController.remove(noteId);
+    this.highlightHitIndex.remove(noteId);
 
     const response = (await chrome.runtime.sendMessage({
       type: "content/delete-note",
@@ -184,7 +261,11 @@ export class NoteController {
       this.liveAnchors.set(liveAnchor.noteId, liveAnchor);
     }
 
-    this.refreshPresentation();
+    if (liveAnchor) {
+      this.highlightController.upsert(liveAnchor);
+      this.highlightHitIndex.upsert(liveAnchor);
+    }
+
     throw new Error(response.reason ?? "Failed to delete the highlight note.");
   }
 

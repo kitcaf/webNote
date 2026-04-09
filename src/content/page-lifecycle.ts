@@ -11,6 +11,9 @@ interface PageLifecycleCoordinatorOptions {
 const DOM_QUIET_WINDOW_MS = 180;
 const DOM_REHYDRATE_DEBOUNCE_MS = 220;
 const DOM_STABILITY_MAX_WAIT_MS = 2500;
+const DOM_REHYDRATE_OBSERVE_WINDOW_MS = 4000;
+const DOM_REHYDRATE_MUTATION_BATCH_THRESHOLD = 4;
+const DOM_REHYDRATE_NODE_THRESHOLD = 18;
 const POST_LAYOUT_RAF_COUNT = 2;
 
 const isOverlayNode = (node: Node | null): boolean => {
@@ -41,6 +44,17 @@ const mutationAffectsPageContent = (mutationRecords: MutationRecord[]): boolean 
     );
   });
 
+const countSignificantMutationNodes = (mutationRecords: MutationRecord[]): number =>
+  mutationRecords.reduce((count, mutationRecord) => {
+    if (isOverlayNode(mutationRecord.target)) {
+      return count;
+    }
+
+    const addedNodeCount = [...mutationRecord.addedNodes].filter((node) => !isOverlayNode(node)).length;
+    const removedNodeCount = [...mutationRecord.removedNodes].filter((node) => !isOverlayNode(node)).length;
+    return count + addedNodeCount + removedNodeCount;
+  }, 0);
+
 export class PageLifecycleCoordinator {
   private currentPage: PageDescriptor = createPageDescriptor(window.location.href, document.title);
   private currentPageState: PageViewState = {
@@ -48,25 +62,12 @@ export class PageLifecycleCoordinator {
     pendingInserts: [],
     tabId: null
   };
-  private readonly domRebuildObserver: MutationObserver;
+  private domRebuildObserver: MutationObserver | null = null;
+  private domRebuildObserverStopTimer: number | null = null;
   private domRehydrateTimer: number | null = null;
   private lifecycleRevision = 0;
 
-  constructor(private readonly options: PageLifecycleCoordinatorOptions) {
-    this.domRebuildObserver = new MutationObserver((mutationRecords) => {
-      if (!mutationAffectsPageContent(mutationRecords)) {
-        return;
-      }
-
-      this.scheduleDomRehydrate();
-    });
-
-    this.domRebuildObserver.observe(this.options.pageRoot, {
-      characterData: true,
-      childList: true,
-      subtree: true
-    });
-  }
+  constructor(private readonly options: PageLifecycleCoordinatorOptions) {}
 
   dispose(): void {
     if (this.domRehydrateTimer !== null) {
@@ -74,7 +75,7 @@ export class PageLifecycleCoordinator {
       this.domRehydrateTimer = null;
     }
 
-    this.domRebuildObserver.disconnect();
+    this.stopDomRebuildObservation();
   }
 
   getCurrentPage(): PageDescriptor {
@@ -112,6 +113,7 @@ export class PageLifecycleCoordinator {
     }
 
     this.currentPageState = pageState;
+    this.startDomRebuildObservation();
     this.scheduleStableHydration();
   }
 
@@ -140,6 +142,54 @@ export class PageLifecycleCoordinator {
       this.domRehydrateTimer = null;
       this.scheduleStableHydration();
     }, DOM_REHYDRATE_DEBOUNCE_MS);
+  }
+
+  private startDomRebuildObservation(): void {
+    this.stopDomRebuildObservation();
+
+    if (this.currentPageState.pageRecord === null) {
+      return;
+    }
+
+    this.domRebuildObserver = new MutationObserver((mutationRecords) => {
+      if (
+        !mutationAffectsPageContent(mutationRecords) ||
+        mutationRecords.length < DOM_REHYDRATE_MUTATION_BATCH_THRESHOLD ||
+        countSignificantMutationNodes(mutationRecords) < DOM_REHYDRATE_NODE_THRESHOLD
+      ) {
+        return;
+      }
+
+      this.scheduleDomRehydrate();
+      this.armDomRebuildObservationStopTimer();
+    });
+
+    this.domRebuildObserver.observe(this.options.pageRoot, {
+      childList: true,
+      subtree: true
+    });
+
+    this.armDomRebuildObservationStopTimer();
+  }
+
+  private armDomRebuildObservationStopTimer(): void {
+    if (this.domRebuildObserverStopTimer !== null) {
+      window.clearTimeout(this.domRebuildObserverStopTimer);
+    }
+
+    this.domRebuildObserverStopTimer = window.setTimeout(() => {
+      this.stopDomRebuildObservation();
+    }, DOM_REHYDRATE_OBSERVE_WINDOW_MS);
+  }
+
+  private stopDomRebuildObservation(): void {
+    if (this.domRebuildObserverStopTimer !== null) {
+      window.clearTimeout(this.domRebuildObserverStopTimer);
+      this.domRebuildObserverStopTimer = null;
+    }
+
+    this.domRebuildObserver?.disconnect();
+    this.domRebuildObserver = null;
   }
 
   private async waitForStablePage(): Promise<void> {

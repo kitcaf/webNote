@@ -1,4 +1,10 @@
-import { PAGE_STORAGE_PREFIX } from "../shared/constants";
+import {
+  ANNOTATION_STORAGE_PREFIX,
+  DOCUMENT_STORAGE_PREFIX,
+  LEGACY_PAGE_STORAGE_PREFIX,
+  NOTE_STORAGE_PREFIX,
+  PAGE_META_STORAGE_PREFIX
+} from "../shared/constants";
 import {
   buildLegacyPageKey,
   createPageDocument,
@@ -16,17 +22,21 @@ import type {
   WebAnnotationEntity
 } from "../shared/types";
 
-const LEGACY_ANNOTATION_STORAGE_PREFIX = "webnote:annotations:";
-
 interface UpsertNoteOptions {
   enqueueInsert?: boolean;
 }
 
-interface NormalizedPageRecordResult {
+interface PageStorageMetaRecord {
+  meta: PageMetaEntity;
+  page: PageDescriptor;
+}
+
+interface NormalizedLegacyPageRecordResult {
   legacyPendingInserts: PendingInsert[];
   pageRecord: PageRecord | null;
 }
 
+type StoredPageMetaCandidate = Partial<PageStorageMetaRecord>;
 type StoredPageRecordCandidate = Partial<PageRecord> & {
   pendingInserts?: unknown;
 };
@@ -34,9 +44,25 @@ type StoredPageRecordCandidate = Partial<PageRecord> & {
 const pageMutationQueues = new Map<PageKey, Promise<void>>();
 const runtimePendingInsertQueues = new Map<PageKey, PendingInsert[]>();
 
-const getStorageKey = (pageKey: PageKey): string => `${PAGE_STORAGE_PREFIX}${pageKey}`;
-const getLegacyAnnotationStorageKey = (pageKey: PageKey): string =>
-  `${LEGACY_ANNOTATION_STORAGE_PREFIX}${pageKey}`;
+const getPageMetaStorageKey = (pageKey: PageKey): string => `${PAGE_META_STORAGE_PREFIX}${pageKey}`;
+const getDocumentStorageKey = (pageKey: PageKey): string => `${DOCUMENT_STORAGE_PREFIX}${pageKey}`;
+const getNoteStorageKey = (pageKey: PageKey): string => `${NOTE_STORAGE_PREFIX}${pageKey}`;
+const getAnnotationStorageKey = (pageKey: PageKey): string => `${ANNOTATION_STORAGE_PREFIX}${pageKey}`;
+const getLegacyPageStorageKey = (pageKey: PageKey): string => `${LEGACY_PAGE_STORAGE_PREFIX}${pageKey}`;
+
+const buildPageStorageKeys = (pageKey: PageKey): {
+  annotationKey: string;
+  documentKey: string;
+  legacyPageKey: string;
+  metaKey: string;
+  notesKey: string;
+} => ({
+  annotationKey: getAnnotationStorageKey(pageKey),
+  documentKey: getDocumentStorageKey(pageKey),
+  legacyPageKey: getLegacyPageStorageKey(pageKey),
+  metaKey: getPageMetaStorageKey(pageKey),
+  notesKey: getNoteStorageKey(pageKey)
+});
 
 const clonePendingInsert = (pendingInsert: PendingInsert): PendingInsert => ({
   createdAt: pendingInsert.createdAt,
@@ -61,6 +87,19 @@ const cloneNote = (note: NoteEntity, page: PageDescriptor): NoteEntity => ({
   pageUrl: page.url
 });
 
+const clonePage = (page: PageDescriptor): PageDescriptor => ({
+  key: page.key,
+  lastSeenAt: page.lastSeenAt,
+  sourceUrl: page.sourceUrl,
+  title: page.title,
+  url: page.url
+});
+
+const cloneMeta = (meta: PageMetaEntity): PageMetaEntity => ({
+  createdAt: meta.createdAt,
+  updatedAt: meta.updatedAt
+});
+
 const normalizePendingInserts = (candidateValue: unknown, pageKey: PageKey): PendingInsert[] => {
   if (!Array.isArray(candidateValue)) {
     return [];
@@ -81,191 +120,196 @@ const normalizePendingInserts = (candidateValue: unknown, pageKey: PageKey): Pen
     }));
 };
 
-const normalizeAnnotations = (
-  annotations: WebAnnotationEntity[] | null | undefined,
-  pageKey: PageKey
-): WebAnnotationEntity[] => {
-  if (!Array.isArray(annotations)) {
+const normalizePageDescriptor = (candidatePage: Partial<PageDescriptor> | null | undefined): PageDescriptor | null => {
+  if (
+    typeof candidatePage?.key !== "string" ||
+    typeof candidatePage.url !== "string" ||
+    typeof candidatePage.title !== "string" ||
+    typeof candidatePage.lastSeenAt !== "string"
+  ) {
+    return null;
+  }
+
+  return {
+    key: candidatePage.key,
+    lastSeenAt: candidatePage.lastSeenAt,
+    sourceUrl: typeof candidatePage.sourceUrl === "string" ? candidatePage.sourceUrl : candidatePage.url,
+    title: candidatePage.title,
+    url: candidatePage.url
+  };
+};
+
+const normalizePageMetaRecord = (
+  candidateMetaRecord: StoredPageMetaCandidate | null | undefined
+): PageStorageMetaRecord | null => {
+  const page = normalizePageDescriptor(candidateMetaRecord?.page);
+
+  if (!page) {
+    return null;
+  }
+
+  const updatedAt =
+    typeof candidateMetaRecord?.meta?.updatedAt === "string"
+      ? candidateMetaRecord.meta.updatedAt
+      : page.lastSeenAt;
+  const createdAt =
+    typeof candidateMetaRecord?.meta?.createdAt === "string"
+      ? candidateMetaRecord.meta.createdAt
+      : updatedAt;
+
+  return {
+    meta: {
+      createdAt,
+      updatedAt
+    },
+    page
+  };
+};
+
+const normalizeDocument = (
+  candidateDocument: Partial<PageDocumentEntity> | null | undefined,
+  page: PageDescriptor,
+  fallbackUpdatedAt: string
+): PageDocumentEntity => ({
+  markdown: typeof candidateDocument?.markdown === "string" ? candidateDocument.markdown : "",
+  pageKey: page.key,
+  pageTitle: page.title,
+  pageUrl: page.url,
+  updatedAt:
+    typeof candidateDocument?.updatedAt === "string"
+      ? candidateDocument.updatedAt
+      : fallbackUpdatedAt
+});
+
+const normalizeNotes = (candidateNotes: unknown, page: PageDescriptor): NoteEntity[] => {
+  if (!Array.isArray(candidateNotes)) {
     return [];
   }
 
-  return annotations
+  return candidateNotes
     .filter(
-      (annotation): annotation is WebAnnotationEntity =>
-        typeof annotation === "object" &&
-        annotation !== null &&
-        typeof annotation.id === "string" &&
-        typeof annotation.content === "string" &&
-        typeof annotation.createdAt === "string" &&
-        typeof annotation.updatedAt === "string" &&
-        typeof annotation.x === "number" &&
-        typeof annotation.y === "number"
+      (candidateNote): candidateNote is NoteEntity =>
+        typeof candidateNote === "object" &&
+        candidateNote !== null &&
+        typeof candidateNote.id === "string" &&
+        typeof candidateNote.quoteText === "string" &&
+        typeof candidateNote.markdownSnippet === "string" &&
+        typeof candidateNote.createdAt === "string" &&
+        typeof candidateNote.updatedAt === "string" &&
+        typeof candidateNote.pageTitle === "string" &&
+        typeof candidateNote.pageUrl === "string" &&
+        typeof candidateNote.pageKey === "string"
+    )
+    .map((note) => cloneNote(note, page));
+};
+
+const normalizeAnnotations = (
+  candidateAnnotations: unknown,
+  pageKey: PageKey
+): WebAnnotationEntity[] => {
+  if (!Array.isArray(candidateAnnotations)) {
+    return [];
+  }
+
+  return candidateAnnotations
+    .filter(
+      (candidateAnnotation): candidateAnnotation is WebAnnotationEntity =>
+        typeof candidateAnnotation === "object" &&
+        candidateAnnotation !== null &&
+        typeof candidateAnnotation.id === "string" &&
+        typeof candidateAnnotation.content === "string" &&
+        typeof candidateAnnotation.createdAt === "string" &&
+        typeof candidateAnnotation.updatedAt === "string" &&
+        typeof candidateAnnotation.x === "number" &&
+        typeof candidateAnnotation.y === "number"
     )
     .map((annotation) => cloneAnnotation(annotation, pageKey));
 };
 
-const normalizePageRecord = (
+const normalizeLegacyPageRecord = (
   candidateRecord: StoredPageRecordCandidate | null | undefined
-): NormalizedPageRecordResult => {
-  if (!candidateRecord?.page || !candidateRecord.document) {
+): NormalizedLegacyPageRecordResult => {
+  const page = normalizePageDescriptor(candidateRecord?.page);
+
+  if (!page) {
     return {
       legacyPendingInserts: [],
       pageRecord: null
     };
   }
 
-  const page = {
-    key: candidateRecord.page.key,
-    lastSeenAt: candidateRecord.page.lastSeenAt,
-    sourceUrl: candidateRecord.page.sourceUrl ?? candidateRecord.page.url,
-    title: candidateRecord.page.title,
-    url: candidateRecord.page.url
-  } satisfies PageDescriptor;
-
-  if (
-    typeof page.key !== "string" ||
-    typeof page.url !== "string" ||
-    typeof page.sourceUrl !== "string" ||
-    typeof page.title !== "string" ||
-    typeof page.lastSeenAt !== "string"
-  ) {
-    return {
-      legacyPendingInserts: [],
-      pageRecord: null
-    };
-  }
-
-  const document = {
-    markdown: typeof candidateRecord.document.markdown === "string" ? candidateRecord.document.markdown : "",
-    pageKey: page.key,
-    pageTitle: page.title,
-    pageUrl: page.url,
-    updatedAt:
-      typeof candidateRecord.document.updatedAt === "string"
-        ? candidateRecord.document.updatedAt
-        : new Date().toISOString()
-  } satisfies PageDocumentEntity;
-
-  const notes = Array.isArray(candidateRecord.notes)
-    ? candidateRecord.notes
-        .filter(
-          (note): note is NoteEntity =>
-            typeof note === "object" &&
-            note !== null &&
-            typeof note.id === "string" &&
-            typeof note.quoteText === "string" &&
-            typeof note.markdownSnippet === "string" &&
-            typeof note.createdAt === "string" &&
-            typeof note.updatedAt === "string" &&
-            typeof note.pageTitle === "string" &&
-            typeof note.pageUrl === "string" &&
-            typeof note.pageKey === "string"
-        )
-        .map((note) => cloneNote(note, page))
-    : [];
-
-  const annotations = normalizeAnnotations(candidateRecord.annotations, page.key);
-  const metaUpdatedAt =
-    typeof candidateRecord.meta?.updatedAt === "string"
+  const document = normalizeDocument(candidateRecord?.document, page, new Date().toISOString());
+  const notes = normalizeNotes(candidateRecord?.notes, page);
+  const annotations = normalizeAnnotations(candidateRecord?.annotations, page.key);
+  const updatedAt =
+    typeof candidateRecord?.meta?.updatedAt === "string"
       ? candidateRecord.meta.updatedAt
       : document.updatedAt;
-  const metaCreatedAt =
-    typeof candidateRecord.meta?.createdAt === "string"
+  const createdAt =
+    typeof candidateRecord?.meta?.createdAt === "string"
       ? candidateRecord.meta.createdAt
-      : metaUpdatedAt;
+      : updatedAt;
 
   return {
-    legacyPendingInserts: normalizePendingInserts(candidateRecord.pendingInserts, page.key),
+    legacyPendingInserts: normalizePendingInserts(candidateRecord?.pendingInserts, page.key),
     pageRecord: {
       annotations,
       document,
       meta: {
-        createdAt: metaCreatedAt,
-        updatedAt: metaUpdatedAt
-      } satisfies PageMetaEntity,
+        createdAt,
+        updatedAt
+      },
       notes,
       page
     }
   };
 };
 
-const touchPageRecord = (pageRecord: PageRecord): PageRecord => {
-  const nextTimestamp = new Date().toISOString();
-
-  return {
-    ...pageRecord,
-    meta: {
-      createdAt: pageRecord.meta.createdAt,
-      updatedAt: nextTimestamp
-    }
-  };
-};
-
-const mergeAnnotationsById = (
-  pageKey: PageKey,
-  primaryAnnotations: WebAnnotationEntity[],
-  secondaryAnnotations: WebAnnotationEntity[]
-): WebAnnotationEntity[] => {
-  const mergedAnnotationsById = new Map<string, WebAnnotationEntity>();
-
-  for (const annotation of [...primaryAnnotations, ...secondaryAnnotations]) {
-    mergedAnnotationsById.set(annotation.id, cloneAnnotation(annotation, pageKey));
-  }
-
-  return [...mergedAnnotationsById.values()];
-};
-
-const savePageRecord = async (pageRecord: PageRecord): Promise<PageRecord> => {
-  await chrome.storage.local.set({
-    [getStorageKey(pageRecord.page.key)]: pageRecord
-  });
-
-  return pageRecord;
-};
-
-const readStoredPageRecord = async (pageKey: PageKey): Promise<NormalizedPageRecordResult> => {
-  const storageKey = getStorageKey(pageKey);
-  const result = await chrome.storage.local.get(storageKey);
-  return normalizePageRecord(result[storageKey] as StoredPageRecordCandidate | undefined);
-};
-
-const readLegacyAnnotations = async (
-  pageKey: PageKey
-): Promise<{ annotations: WebAnnotationEntity[]; hasLegacyKey: boolean }> => {
-  const storageKey = getLegacyAnnotationStorageKey(pageKey);
-  const result = await chrome.storage.local.get(storageKey);
-
-  return {
-    annotations: normalizeAnnotations(result[storageKey] as WebAnnotationEntity[] | undefined, pageKey),
-    hasLegacyKey: result[storageKey] !== undefined
-  };
-};
-
-const seedRuntimePendingInserts = (pageKey: PageKey, pendingInserts: PendingInsert[]): void => {
-  if (pendingInserts.length === 0 || runtimePendingInsertQueues.has(pageKey)) {
-    return;
-  }
-
-  runtimePendingInsertQueues.set(pageKey, clonePendingInserts(pendingInserts));
-};
-
-const updatePageMetadata = (
-  pageRecord: PageRecord,
+const createPageMetaRecord = (
   page: PageDescriptor,
-  documentOverride?: Partial<PageDocumentEntity>
-): PageRecord => ({
-  ...pageRecord,
-  document: {
-    ...pageRecord.document,
-    pageKey: page.key,
-    pageTitle: page.title,
-    pageUrl: page.url,
-    ...documentOverride
+  meta?: Partial<PageMetaEntity>
+): PageStorageMetaRecord => {
+  const updatedAt = typeof meta?.updatedAt === "string" ? meta.updatedAt : new Date().toISOString();
+  const createdAt = typeof meta?.createdAt === "string" ? meta.createdAt : updatedAt;
+
+  return {
+    meta: {
+      createdAt,
+      updatedAt
+    },
+    page: clonePage(page)
+  };
+};
+
+const touchPageMetaRecord = (
+  pageMetaRecord: PageStorageMetaRecord,
+  pageOverride?: PageDescriptor
+): PageStorageMetaRecord => ({
+  meta: {
+    createdAt: pageMetaRecord.meta.createdAt,
+    updatedAt: new Date().toISOString()
   },
-  notes: pageRecord.notes.map((note) => cloneNote(note, page)),
-  annotations: pageRecord.annotations.map((annotation) => cloneAnnotation(annotation, page.key)),
-  page
+  page: clonePage(pageOverride ?? pageMetaRecord.page)
 });
+
+const synchronizePageDocument = (
+  pageDocument: PageDocumentEntity,
+  page: PageDescriptor,
+  markdownOverride?: string
+): PageDocumentEntity => ({
+  markdown: markdownOverride ?? pageDocument.markdown,
+  pageKey: page.key,
+  pageTitle: page.title,
+  pageUrl: page.url,
+  updatedAt:
+    markdownOverride === undefined ? pageDocument.updatedAt : new Date().toISOString()
+});
+
+const didPageDescriptorChange = (currentPage: PageDescriptor, nextPage: PageDescriptor): boolean =>
+  currentPage.key !== nextPage.key ||
+  currentPage.url !== nextPage.url ||
+  currentPage.sourceUrl !== nextPage.sourceUrl ||
+  currentPage.title !== nextPage.title;
 
 const migrateLegacyDocument = (pageRecord: PageRecord, page: PageDescriptor): PageRecord => {
   const seededMarkdownVariants = new Set([
@@ -280,14 +324,18 @@ const migrateLegacyDocument = (pageRecord: PageRecord, page: PageDescriptor): Pa
     return pageRecord;
   }
 
-  return touchPageRecord({
+  return {
     ...pageRecord,
     document: {
       ...pageRecord.document,
       markdown: "",
       updatedAt: new Date().toISOString()
+    },
+    meta: {
+      ...pageRecord.meta,
+      updatedAt: new Date().toISOString()
     }
-  });
+  };
 };
 
 const createEmptyPageRecord = (page: PageDescriptor): PageRecord => {
@@ -305,79 +353,88 @@ const createEmptyPageRecord = (page: PageDescriptor): PageRecord => {
   };
 };
 
-const migrateLegacyPageRecord = async (page: PageDescriptor): Promise<NormalizedPageRecordResult> => {
-  const legacyPageKey = buildLegacyPageKey(page.sourceUrl);
+const savePageSlices = async (input: {
+  annotations?: WebAnnotationEntity[];
+  document?: PageDocumentEntity;
+  notes?: NoteEntity[];
+  pageKey: PageKey;
+  pageMetaRecord?: PageStorageMetaRecord;
+}): Promise<void> => {
+  const nextStorageValues: Record<string, unknown> = {};
 
-  if (legacyPageKey === page.key) {
-    return {
-      legacyPendingInserts: [],
-      pageRecord: null
-    };
+  if (input.pageMetaRecord) {
+    nextStorageValues[getPageMetaStorageKey(input.pageKey)] = {
+      meta: cloneMeta(input.pageMetaRecord.meta),
+      page: clonePage(input.pageMetaRecord.page)
+    } satisfies PageStorageMetaRecord;
   }
 
-  const legacyStorageKey = getStorageKey(legacyPageKey);
-  const result = await chrome.storage.local.get(legacyStorageKey);
-  const normalizedLegacyRecord = normalizePageRecord(result[legacyStorageKey] as StoredPageRecordCandidate | undefined);
-
-  if (!normalizedLegacyRecord.pageRecord) {
-    return normalizedLegacyRecord;
+  if (input.document) {
+    nextStorageValues[getDocumentStorageKey(input.pageKey)] = {
+      ...input.document
+    } satisfies PageDocumentEntity;
   }
 
-  await chrome.storage.local.remove(legacyStorageKey);
-
-  return {
-    ...normalizedLegacyRecord,
-    pageRecord: updatePageMetadata(normalizedLegacyRecord.pageRecord, page)
-  };
-};
-
-const readPageRecord = async (pageKey: PageKey): Promise<PageRecord | null> => {
-  const normalizedStoredRecord = await readStoredPageRecord(pageKey);
-  const pageRecord = normalizedStoredRecord.pageRecord;
-
-  if (!pageRecord) {
-    return null;
-  }
-
-  seedRuntimePendingInserts(pageKey, normalizedStoredRecord.legacyPendingInserts);
-
-  const legacyAnnotations = await readLegacyAnnotations(pageKey);
-  const shouldPersistCleanup =
-    normalizedStoredRecord.legacyPendingInserts.length > 0 || legacyAnnotations.hasLegacyKey;
-
-  const nextPageRecord = legacyAnnotations.hasLegacyKey
-    ? touchPageRecord({
-        ...pageRecord,
-        annotations: mergeAnnotationsById(pageKey, pageRecord.annotations, legacyAnnotations.annotations)
+  if (input.notes) {
+    nextStorageValues[getNoteStorageKey(input.pageKey)] = input.notes.map((note) =>
+      cloneNote(note, input.pageMetaRecord?.page ?? {
+        key: note.pageKey,
+        lastSeenAt: note.updatedAt,
+        sourceUrl: note.pageUrl,
+        title: note.pageTitle,
+        url: note.pageUrl
       })
-    : pageRecord;
-
-  if (!shouldPersistCleanup) {
-    return nextPageRecord;
+    );
   }
 
-  if (legacyAnnotations.hasLegacyKey) {
-    await chrome.storage.local.remove(getLegacyAnnotationStorageKey(pageKey));
+  if (input.annotations) {
+    nextStorageValues[getAnnotationStorageKey(input.pageKey)] = input.annotations.map((annotation) =>
+      cloneAnnotation(annotation, input.pageKey)
+    );
   }
 
-  return savePageRecord(nextPageRecord);
+  if (Object.keys(nextStorageValues).length === 0) {
+    return;
+  }
+
+  await chrome.storage.local.set(nextStorageValues);
 };
 
-const getOrCreatePageRecordUnsafe = async (page: PageDescriptor): Promise<PageRecord> => {
-  const existingRecord = await readPageRecord(page.key);
+const removeLegacyPageRecord = async (pageKey: PageKey): Promise<void> => {
+  await chrome.storage.local.remove(getLegacyPageStorageKey(pageKey));
+};
 
-  if (existingRecord) {
-    return savePageRecord(updatePageMetadata(migrateLegacyDocument(existingRecord, page), page));
+const removeAllPageSlices = async (pageKey: PageKey): Promise<void> => {
+  await chrome.storage.local.remove([
+    getAnnotationStorageKey(pageKey),
+    getDocumentStorageKey(pageKey),
+    getLegacyPageStorageKey(pageKey),
+    getNoteStorageKey(pageKey),
+    getPageMetaStorageKey(pageKey)
+  ]);
+};
+
+const materializePageRecord = async (pageRecord: PageRecord): Promise<PageRecord> => {
+  await savePageSlices({
+    annotations: pageRecord.annotations,
+    document: pageRecord.document,
+    notes: pageRecord.notes,
+    pageKey: pageRecord.page.key,
+    pageMetaRecord: {
+      meta: pageRecord.meta,
+      page: pageRecord.page
+    }
+  });
+
+  return pageRecord;
+};
+
+const seedRuntimePendingInserts = (pageKey: PageKey, pendingInserts: PendingInsert[]): void => {
+  if (pendingInserts.length === 0 || runtimePendingInsertQueues.has(pageKey)) {
+    return;
   }
 
-  const migratedLegacyRecord = await migrateLegacyPageRecord(page);
-
-  if (migratedLegacyRecord.pageRecord) {
-    seedRuntimePendingInserts(page.key, migratedLegacyRecord.legacyPendingInserts);
-    return savePageRecord(updatePageMetadata(migrateLegacyDocument(migratedLegacyRecord.pageRecord, page), page));
-  }
-
-  return savePageRecord(createEmptyPageRecord(page));
+  runtimePendingInsertQueues.set(pageKey, clonePendingInserts(pendingInserts));
 };
 
 const removeRuntimePendingInsertIds = (pageKey: PageKey, noteIds: string[]): PendingInsert[] => {
@@ -419,6 +476,246 @@ const enqueueRuntimePendingInsert = (note: NoteEntity): void => {
   ]);
 };
 
+const readPageRecord = async (pageKey: PageKey): Promise<PageRecord | null> => {
+  const storageKeys = buildPageStorageKeys(pageKey);
+  const storageResult = await chrome.storage.local.get([
+    storageKeys.annotationKey,
+    storageKeys.documentKey,
+    storageKeys.legacyPageKey,
+    storageKeys.metaKey,
+    storageKeys.notesKey
+  ]);
+  const storedPageMetaRecord = normalizePageMetaRecord(
+    storageResult[storageKeys.metaKey] as StoredPageMetaCandidate | undefined
+  );
+  const legacyPageRecordResult = normalizeLegacyPageRecord(
+    storageResult[storageKeys.legacyPageKey] as StoredPageRecordCandidate | undefined
+  );
+
+  if (!storedPageMetaRecord && !legacyPageRecordResult.pageRecord) {
+    return null;
+  }
+
+  const page = clonePage(storedPageMetaRecord?.page ?? legacyPageRecordResult.pageRecord!.page);
+  const meta = cloneMeta(storedPageMetaRecord?.meta ?? legacyPageRecordResult.pageRecord!.meta);
+  const document =
+    storageResult[storageKeys.documentKey] === undefined
+      ? normalizeDocument(legacyPageRecordResult.pageRecord?.document, page, meta.updatedAt)
+      : normalizeDocument(
+          storageResult[storageKeys.documentKey] as Partial<PageDocumentEntity> | undefined,
+          page,
+          meta.updatedAt
+        );
+  const notes =
+    storageResult[storageKeys.notesKey] === undefined
+      ? legacyPageRecordResult.pageRecord?.notes.map((note) => cloneNote(note, page)) ?? []
+      : normalizeNotes(storageResult[storageKeys.notesKey], page);
+  const annotations =
+    storageResult[storageKeys.annotationKey] === undefined
+      ? legacyPageRecordResult.pageRecord?.annotations.map((annotation) => cloneAnnotation(annotation, page.key)) ?? []
+      : normalizeAnnotations(storageResult[storageKeys.annotationKey], page.key);
+
+  seedRuntimePendingInserts(pageKey, legacyPageRecordResult.legacyPendingInserts);
+
+  const nextPageRecord: PageRecord = {
+    annotations,
+    document,
+    meta,
+    notes,
+    page
+  };
+  const shouldPersistMigration =
+    storageResult[storageKeys.metaKey] === undefined ||
+    storageResult[storageKeys.documentKey] === undefined ||
+    storageResult[storageKeys.notesKey] === undefined ||
+    storageResult[storageKeys.annotationKey] === undefined ||
+    legacyPageRecordResult.pageRecord !== null;
+
+  if (!shouldPersistMigration) {
+    return nextPageRecord;
+  }
+
+  await materializePageRecord(nextPageRecord);
+
+  if (legacyPageRecordResult.pageRecord) {
+    await removeLegacyPageRecord(pageKey);
+  }
+
+  return nextPageRecord;
+};
+
+const readPageMetaRecord = async (pageKey: PageKey): Promise<PageStorageMetaRecord | null> => {
+  const storageKey = getPageMetaStorageKey(pageKey);
+  const storageResult = await chrome.storage.local.get(storageKey);
+  const pageMetaRecord = normalizePageMetaRecord(storageResult[storageKey] as StoredPageMetaCandidate | undefined);
+
+  if (pageMetaRecord) {
+    return pageMetaRecord;
+  }
+
+  const pageRecord = await readPageRecord(pageKey);
+
+  if (!pageRecord) {
+    return null;
+  }
+
+  return {
+    meta: cloneMeta(pageRecord.meta),
+    page: clonePage(pageRecord.page)
+  };
+};
+
+const readPageDocument = async (pageKey: PageKey): Promise<PageDocumentEntity | null> => {
+  const pageMetaRecord = await readPageMetaRecord(pageKey);
+
+  if (!pageMetaRecord) {
+    return null;
+  }
+
+  const storageKey = getDocumentStorageKey(pageKey);
+  const storageResult = await chrome.storage.local.get(storageKey);
+
+  if (storageResult[storageKey] !== undefined) {
+    return normalizeDocument(
+      storageResult[storageKey] as Partial<PageDocumentEntity> | undefined,
+      pageMetaRecord.page,
+      pageMetaRecord.meta.updatedAt
+    );
+  }
+
+  const pageRecord = await readPageRecord(pageKey);
+  return pageRecord?.document ?? createPageDocument(pageMetaRecord.page);
+};
+
+const readPageNotes = async (pageKey: PageKey): Promise<{
+  notes: NoteEntity[];
+  pageMetaRecord: PageStorageMetaRecord;
+} | null> => {
+  const pageMetaRecord = await readPageMetaRecord(pageKey);
+
+  if (!pageMetaRecord) {
+    return null;
+  }
+
+  const storageKey = getNoteStorageKey(pageKey);
+  const storageResult = await chrome.storage.local.get(storageKey);
+
+  if (storageResult[storageKey] !== undefined) {
+    return {
+      notes: normalizeNotes(storageResult[storageKey], pageMetaRecord.page),
+      pageMetaRecord
+    };
+  }
+
+  const pageRecord = await readPageRecord(pageKey);
+
+  return {
+    notes: pageRecord?.notes ?? [],
+    pageMetaRecord
+  };
+};
+
+const readPageAnnotations = async (pageKey: PageKey): Promise<{
+  annotations: WebAnnotationEntity[];
+  pageMetaRecord: PageStorageMetaRecord;
+} | null> => {
+  const pageMetaRecord = await readPageMetaRecord(pageKey);
+
+  if (!pageMetaRecord) {
+    return null;
+  }
+
+  const storageKey = getAnnotationStorageKey(pageKey);
+  const storageResult = await chrome.storage.local.get(storageKey);
+
+  if (storageResult[storageKey] !== undefined) {
+    return {
+      annotations: normalizeAnnotations(storageResult[storageKey], pageKey),
+      pageMetaRecord
+    };
+  }
+
+  const pageRecord = await readPageRecord(pageKey);
+
+  return {
+    annotations: pageRecord?.annotations ?? [],
+    pageMetaRecord
+  };
+};
+
+const getOrCreatePageRecordUnsafe = async (page: PageDescriptor): Promise<PageRecord> => {
+  const existingRecord = await readPageRecord(page.key);
+
+  if (existingRecord) {
+    const shouldUpdatePage = didPageDescriptorChange(existingRecord.page, page);
+    const migratedRecord = migrateLegacyDocument(existingRecord, page);
+    const nextPage = shouldUpdatePage
+      ? {
+          ...page,
+          lastSeenAt: existingRecord.page.lastSeenAt
+        }
+      : migratedRecord.page;
+    const nextRecord: PageRecord = {
+      ...migratedRecord,
+      document: synchronizePageDocument(migratedRecord.document, nextPage),
+      meta:
+        shouldUpdatePage || migratedRecord.document.updatedAt !== existingRecord.document.updatedAt
+          ? touchPageMetaRecord({
+              meta: migratedRecord.meta,
+              page: existingRecord.page
+            }, nextPage).meta
+          : migratedRecord.meta,
+      page: nextPage
+    };
+
+    if (
+      !shouldUpdatePage &&
+      nextRecord.document.updatedAt === existingRecord.document.updatedAt &&
+      nextRecord.meta.updatedAt === existingRecord.meta.updatedAt
+    ) {
+      return nextRecord;
+    }
+
+    await savePageSlices({
+      document: nextRecord.document,
+      pageKey: nextRecord.page.key,
+      pageMetaRecord: {
+        meta: nextRecord.meta,
+        page: nextRecord.page
+      }
+    });
+    return nextRecord;
+  }
+
+  const legacyPageKey = buildLegacyPageKey(page.sourceUrl);
+
+  if (legacyPageKey !== page.key) {
+    const migratedLegacyRecord = await readPageRecord(legacyPageKey);
+
+    if (migratedLegacyRecord) {
+      const nextPageRecord: PageRecord = {
+        ...migratedLegacyRecord,
+        document: synchronizePageDocument(migratedLegacyRecord.document, page),
+        meta: touchPageMetaRecord({
+          meta: migratedLegacyRecord.meta,
+          page: migratedLegacyRecord.page
+        }, page).meta,
+        page
+      };
+
+      seedRuntimePendingInserts(page.key, getPendingInserts(legacyPageKey));
+      runtimePendingInsertQueues.delete(legacyPageKey);
+      await materializePageRecord(nextPageRecord);
+      await removeAllPageSlices(legacyPageKey);
+      return nextPageRecord;
+    }
+  }
+
+  const emptyPageRecord = createEmptyPageRecord(page);
+  await materializePageRecord(emptyPageRecord);
+  return emptyPageRecord;
+};
+
 export const getPendingInserts = (pageKey: PageKey): PendingInsert[] =>
   clonePendingInserts(runtimePendingInsertQueues.get(pageKey) ?? []);
 
@@ -450,47 +747,67 @@ export const upsertNote = async (
 
   return withPageMutationLock(page.key, async () => {
     const pageRecord = await getOrCreatePageRecordUnsafe(page);
-    const nextNotes = [...pageRecord.notes];
+    const existingNotesState = await readPageNotes(page.key);
+    const nextNotes = [...(existingNotesState?.notes ?? pageRecord.notes)];
     const existingIndex = nextNotes.findIndex((item) => item.id === note.id);
+    const clonedNote = cloneNote(note, pageRecord.page);
 
     if (existingIndex >= 0) {
-      nextNotes[existingIndex] = cloneNote(note, page);
+      nextNotes[existingIndex] = clonedNote;
     } else {
-      nextNotes.push(cloneNote(note, page));
+      nextNotes.push(clonedNote);
     }
 
     if (shouldEnqueueInsert) {
-      enqueueRuntimePendingInsert(note);
+      enqueueRuntimePendingInsert(clonedNote);
     }
 
-    return savePageRecord(
-      touchPageRecord({
-        ...pageRecord,
-        notes: nextNotes,
-        page
-      })
-    );
+    const nextPageMetaRecord = touchPageMetaRecord({
+      meta: pageRecord.meta,
+      page: pageRecord.page
+    }, pageRecord.page);
+
+    await savePageSlices({
+      notes: nextNotes,
+      pageKey: page.key,
+      pageMetaRecord: nextPageMetaRecord
+    });
+
+    return {
+      ...pageRecord,
+      meta: nextPageMetaRecord.meta,
+      notes: nextNotes
+    };
   });
 };
 
 export const saveDocument = async (pageKey: PageKey, markdown: string): Promise<PageRecord | null> =>
   withPageMutationLock(pageKey, async () => {
-    const pageRecord = await readPageRecord(pageKey);
+    const pageMetaRecord = await readPageMetaRecord(pageKey);
+    const pageDocument = await readPageDocument(pageKey);
 
-    if (!pageRecord) {
+    if (!pageMetaRecord || !pageDocument) {
       return null;
     }
 
-    return savePageRecord(
-      touchPageRecord({
-        ...pageRecord,
-        document: {
-          ...pageRecord.document,
-          markdown,
-          updatedAt: new Date().toISOString()
+    const nextPageMetaRecord = touchPageMetaRecord(pageMetaRecord, pageMetaRecord.page);
+    const nextDocument = synchronizePageDocument(pageDocument, pageMetaRecord.page, markdown);
+
+    await savePageSlices({
+      document: nextDocument,
+      pageKey,
+      pageMetaRecord: nextPageMetaRecord
+    });
+
+    const pageRecord = await readPageRecord(pageKey);
+
+    return pageRecord
+      ? {
+          ...pageRecord,
+          document: nextDocument,
+          meta: nextPageMetaRecord.meta
         }
-      })
-    );
+      : null;
   });
 
 export const flushPendingInserts = async (pageKey: PageKey, noteIds: string[]): Promise<PendingInsert[]> =>
@@ -500,27 +817,39 @@ export const upsertAnnotation = async (
   annotation: WebAnnotationEntity
 ): Promise<PageRecord | null> =>
   withPageMutationLock(annotation.pageKey, async () => {
-    const pageRecord = await readPageRecord(annotation.pageKey);
+    const existingAnnotationsState = await readPageAnnotations(annotation.pageKey);
 
-    if (!pageRecord) {
+    if (!existingAnnotationsState) {
       return null;
     }
 
-    const nextAnnotations = [...pageRecord.annotations];
+    const nextAnnotations = [...existingAnnotationsState.annotations];
     const existingIndex = nextAnnotations.findIndex((item) => item.id === annotation.id);
+    const clonedAnnotation = cloneAnnotation(annotation, annotation.pageKey);
 
     if (existingIndex >= 0) {
-      nextAnnotations[existingIndex] = cloneAnnotation(annotation, annotation.pageKey);
+      nextAnnotations[existingIndex] = clonedAnnotation;
     } else {
-      nextAnnotations.push(cloneAnnotation(annotation, annotation.pageKey));
+      nextAnnotations.push(clonedAnnotation);
     }
 
-    return savePageRecord(
-      touchPageRecord({
-        ...pageRecord,
-        annotations: nextAnnotations
-      })
-    );
+    const nextPageMetaRecord = touchPageMetaRecord(existingAnnotationsState.pageMetaRecord);
+
+    await savePageSlices({
+      annotations: nextAnnotations,
+      pageKey: annotation.pageKey,
+      pageMetaRecord: nextPageMetaRecord
+    });
+
+    const pageRecord = await readPageRecord(annotation.pageKey);
+
+    return pageRecord
+      ? {
+          ...pageRecord,
+          annotations: nextAnnotations,
+          meta: nextPageMetaRecord.meta
+        }
+      : null;
   });
 
 export const replaceAnnotations = async (
@@ -528,18 +857,30 @@ export const replaceAnnotations = async (
   annotations: WebAnnotationEntity[]
 ): Promise<PageRecord | null> =>
   withPageMutationLock(pageKey, async () => {
-    const pageRecord = await readPageRecord(pageKey);
+    const existingAnnotationsState = await readPageAnnotations(pageKey);
 
-    if (!pageRecord) {
+    if (!existingAnnotationsState) {
       return null;
     }
 
-    return savePageRecord(
-      touchPageRecord({
-        ...pageRecord,
-        annotations: normalizeAnnotations(annotations, pageKey)
-      })
-    );
+    const nextAnnotations = normalizeAnnotations(annotations, pageKey);
+    const nextPageMetaRecord = touchPageMetaRecord(existingAnnotationsState.pageMetaRecord);
+
+    await savePageSlices({
+      annotations: nextAnnotations,
+      pageKey,
+      pageMetaRecord: nextPageMetaRecord
+    });
+
+    const pageRecord = await readPageRecord(pageKey);
+
+    return pageRecord
+      ? {
+          ...pageRecord,
+          annotations: nextAnnotations,
+          meta: nextPageMetaRecord.meta
+        }
+      : null;
   });
 
 export const deleteAnnotation = async (
@@ -547,36 +888,61 @@ export const deleteAnnotation = async (
   annotationId: string
 ): Promise<PageRecord | null> =>
   withPageMutationLock(pageKey, async () => {
-    const pageRecord = await readPageRecord(pageKey);
+    const existingAnnotationsState = await readPageAnnotations(pageKey);
 
-    if (!pageRecord) {
+    if (!existingAnnotationsState) {
       return null;
     }
 
-    return savePageRecord(
-      touchPageRecord({
-        ...pageRecord,
-        annotations: pageRecord.annotations.filter((annotation) => annotation.id !== annotationId)
-      })
+    const nextAnnotations = existingAnnotationsState.annotations.filter(
+      (annotation) => annotation.id !== annotationId
     );
+    const nextPageMetaRecord = touchPageMetaRecord(existingAnnotationsState.pageMetaRecord);
+
+    await savePageSlices({
+      annotations: nextAnnotations,
+      pageKey,
+      pageMetaRecord: nextPageMetaRecord
+    });
+
+    const pageRecord = await readPageRecord(pageKey);
+
+    return pageRecord
+      ? {
+          ...pageRecord,
+          annotations: nextAnnotations,
+          meta: nextPageMetaRecord.meta
+        }
+      : null;
   });
 
 export const deleteNote = async (pageKey: PageKey, noteId: string): Promise<PageRecord | null> =>
   withPageMutationLock(pageKey, async () => {
-    const pageRecord = await readPageRecord(pageKey);
+    const existingNotesState = await readPageNotes(pageKey);
 
-    if (!pageRecord) {
+    if (!existingNotesState) {
       return null;
     }
 
     removeRuntimePendingInsertIds(pageKey, [noteId]);
+    const nextNotes = existingNotesState.notes.filter((note) => note.id !== noteId);
+    const nextPageMetaRecord = touchPageMetaRecord(existingNotesState.pageMetaRecord);
 
-    return savePageRecord(
-      touchPageRecord({
-        ...pageRecord,
-        notes: pageRecord.notes.filter((note) => note.id !== noteId)
-      })
-    );
+    await savePageSlices({
+      notes: nextNotes,
+      pageKey,
+      pageMetaRecord: nextPageMetaRecord
+    });
+
+    const pageRecord = await readPageRecord(pageKey);
+
+    return pageRecord
+      ? {
+          ...pageRecord,
+          meta: nextPageMetaRecord.meta,
+          notes: nextNotes
+        }
+      : null;
   });
 
 const withPageMutationLock = async <T>(pageKey: PageKey, task: () => Promise<T>): Promise<T> => {

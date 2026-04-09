@@ -30,6 +30,8 @@ const injectHighlightStyles = (): void => {
 
 export class HighlightController {
   private readonly noteAnchors = new Map<string, LiveAnchor>();
+  private readonly persistentRanges = new Map<string, Range>();
+  private readonly persistentHighlight: Highlight | null;
   private activeHighlightTimer: number | null = null;
   readonly isSupported =
     typeof Highlight !== "undefined" &&
@@ -40,45 +42,80 @@ export class HighlightController {
   constructor() {
     if (this.isSupported) {
       injectHighlightStyles();
+      this.persistentHighlight = new Highlight();
+      this.persistentHighlight.priority = 1;
+      CSS.highlights.set(PRIMARY_HIGHLIGHT_NAME, this.persistentHighlight);
+    } else {
+      this.persistentHighlight = null;
     }
   }
 
   clear(): void {
     this.noteAnchors.clear();
+    this.persistentRanges.clear();
 
     if (!this.isSupported) {
       return;
     }
 
-    CSS.highlights.delete(PRIMARY_HIGHLIGHT_NAME);
+    this.persistentHighlight?.clear();
+    if (this.persistentHighlight) {
+      CSS.highlights.set(PRIMARY_HIGHLIGHT_NAME, this.persistentHighlight);
+    }
     CSS.highlights.delete(ACTIVE_HIGHLIGHT_NAME);
   }
 
   replaceAll(anchors: Iterable<LiveAnchor>): void {
-    this.noteAnchors.clear();
+    const nextAnchors = new Map<string, LiveAnchor>();
 
     for (const anchor of anchors) {
-      this.noteAnchors.set(anchor.noteId, anchor);
+      nextAnchors.set(anchor.noteId, anchor);
     }
 
-    this.renderPersistentHighlight();
+    for (const noteId of this.noteAnchors.keys()) {
+      if (!nextAnchors.has(noteId)) {
+        this.remove(noteId);
+      }
+    }
+
+    for (const anchor of nextAnchors.values()) {
+      this.upsert(anchor);
+    }
   }
 
   upsert(anchor: LiveAnchor): void {
     this.noteAnchors.set(anchor.noteId, anchor);
-    this.renderPersistentHighlight();
-  }
 
-  private renderPersistentHighlight(): void {
     if (!this.isSupported) {
       return;
     }
 
-    const persistentHighlight = new Highlight(
-      ...[...this.noteAnchors.values()].map((item) => item.range.cloneRange())
-    );
-    persistentHighlight.priority = 1;
-    CSS.highlights.set(PRIMARY_HIGHLIGHT_NAME, persistentHighlight);
+    const previousRange = this.persistentRanges.get(anchor.noteId);
+
+    if (previousRange) {
+      this.persistentHighlight?.delete(previousRange);
+    }
+
+    const nextRange = anchor.range.cloneRange();
+    this.persistentRanges.set(anchor.noteId, nextRange);
+    this.persistentHighlight?.add(nextRange);
+  }
+
+  remove(noteId: string): void {
+    this.noteAnchors.delete(noteId);
+
+    if (!this.isSupported) {
+      return;
+    }
+
+    const previousRange = this.persistentRanges.get(noteId);
+
+    if (!previousRange) {
+      return;
+    }
+
+    this.persistentRanges.delete(noteId);
+    this.persistentHighlight?.delete(previousRange);
   }
 
   flash(anchor: LiveAnchor): void {
