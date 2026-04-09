@@ -1,12 +1,20 @@
+import {
+  ANNOTATION_DEFAULT_WIDTH_PX,
+  ANNOTATION_MIN_WIDTH_PX,
+  ANNOTATION_WIDTH_PREFERENCE_STORAGE_KEY
+} from "../shared/constants";
 import type { BasicResponse, RuntimeMessage } from "../shared/protocol";
 import { createWebAnnotationEntity } from "../shared/serialization";
 import type { PageKey, PageRecord, WebAnnotationEntity } from "../shared/types";
 import { AnnotationOverlay } from "./annotation-overlay";
 
+const clampPreferredWidth = (width: number): number => Math.max(Math.round(width), ANNOTATION_MIN_WIDTH_PX);
+
 export class AnnotationController {
   private readonly overlay: AnnotationOverlay;
   private readonly annotations = new Map<string, WebAnnotationEntity>();
   private currentPageKey: PageKey | null = null;
+  private preferredWidth = ANNOTATION_DEFAULT_WIDTH_PX;
 
   constructor() {
     this.overlay = new AnnotationOverlay({
@@ -15,6 +23,8 @@ export class AnnotationController {
       },
       onSave: async (input) => this.saveAnnotation(input)
     });
+    this.overlay.setPreferredDraftWidth(this.preferredWidth);
+    void this.loadPreferredWidth();
   }
 
   isOwnedTarget(target: EventTarget | null): boolean {
@@ -55,7 +65,7 @@ export class AnnotationController {
   }
 
   openDraftAt(pageX: number, pageY: number): void {
-    this.overlay.openDraftAt(pageX, pageY);
+    this.overlay.openDraftAt(pageX, pageY, this.preferredWidth);
   }
 
   cancelDraft(): void {
@@ -70,6 +80,7 @@ export class AnnotationController {
     annotationId?: string;
     content: string;
     pageKey: PageKey;
+    width: number;
     x: number;
     y: number;
   }): Promise<WebAnnotationEntity> {
@@ -78,6 +89,7 @@ export class AnnotationController {
       ? {
           ...existingAnnotation,
           content: input.content.trim(),
+          width: Math.round(input.width),
           x: Math.round(input.x),
           y: Math.round(input.y),
           updatedAt: new Date().toISOString()
@@ -85,6 +97,7 @@ export class AnnotationController {
       : createWebAnnotationEntity({
           content: input.content,
           pageKey: input.pageKey,
+          width: input.width,
           x: input.x,
           y: input.y
         });
@@ -100,6 +113,7 @@ export class AnnotationController {
       throw new Error(response.reason ?? "Failed to save the web annotation.");
     }
 
+    this.updatePreferredWidth(nextAnnotation.width);
     this.annotations.set(nextAnnotation.id, nextAnnotation);
     return nextAnnotation;
   }
@@ -124,5 +138,39 @@ export class AnnotationController {
     }
 
     this.annotations.delete(annotationId);
+  }
+
+  private async loadPreferredWidth(): Promise<void> {
+    try {
+      const storageResult = await chrome.storage.local.get(ANNOTATION_WIDTH_PREFERENCE_STORAGE_KEY);
+      const candidateWidth = storageResult[ANNOTATION_WIDTH_PREFERENCE_STORAGE_KEY];
+
+      if (typeof candidateWidth !== "number") {
+        return;
+      }
+
+      this.updatePreferredWidth(candidateWidth);
+    } catch (error) {
+      console.warn("WebNote failed to load the preferred annotation width.", error);
+    }
+  }
+
+  private updatePreferredWidth(width: number): void {
+    const nextPreferredWidth = clampPreferredWidth(width);
+
+    if (this.preferredWidth === nextPreferredWidth) {
+      this.overlay.setPreferredDraftWidth(nextPreferredWidth);
+      return;
+    }
+
+    this.preferredWidth = nextPreferredWidth;
+    this.overlay.setPreferredDraftWidth(this.preferredWidth);
+    void chrome.storage.local
+      .set({
+        [ANNOTATION_WIDTH_PREFERENCE_STORAGE_KEY]: this.preferredWidth
+      })
+      .catch((error) => {
+        console.warn("WebNote failed to persist the preferred annotation width.", error);
+      });
   }
 }

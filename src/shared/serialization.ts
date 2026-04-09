@@ -1,4 +1,10 @@
-import { NOTE_LINK_LABEL, NOTE_LINK_SCHEME, NOTE_META_SEPARATOR } from "./constants";
+import {
+  ANNOTATION_DEFAULT_WIDTH_PX,
+  ANNOTATION_MIN_WIDTH_PX,
+  NOTE_LINK_LABEL,
+  NOTE_LINK_SCHEME,
+  NOTE_META_SEPARATOR
+} from "./constants";
 import type {
   NoteKind,
   NoteEntity,
@@ -10,6 +16,8 @@ import type {
 } from "./types";
 
 const buildTimestamp = (): string => new Date().toISOString();
+const clampAnnotationWidth = (width: number): number =>
+  Math.max(Math.round(width), ANNOTATION_MIN_WIDTH_PX);
 
 const normalizeUrl = (rawUrl: string): string => new URL(rawUrl).toString();
 const normalizeStableUrl = (rawUrl: string): string => {
@@ -92,6 +100,7 @@ export const createNoteEntity = (input: {
 export const createWebAnnotationEntity = (input: {
   pageKey: PageKey;
   content: string;
+  width?: number;
   x: number;
   y: number;
 }): WebAnnotationEntity => {
@@ -101,6 +110,7 @@ export const createWebAnnotationEntity = (input: {
     id: crypto.randomUUID(),
     pageKey: input.pageKey,
     content: input.content.trim(),
+    width: clampAnnotationWidth(input.width ?? ANNOTATION_DEFAULT_WIDTH_PX),
     x: Math.round(input.x),
     y: Math.round(input.y),
     createdAt,

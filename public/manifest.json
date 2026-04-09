@@ -38,6 +38,17 @@
         "https://*/*"
       ],
       "js": [
+        "page-route-bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
         "content.js"
       ],
       "run_at": "document_idle"

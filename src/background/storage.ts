@@ -1,5 +1,7 @@
 import {
   ANNOTATION_STORAGE_PREFIX,
+  ANNOTATION_DEFAULT_WIDTH_PX,
+  ANNOTATION_MIN_WIDTH_PX,
   DOCUMENT_STORAGE_PREFIX,
   LEGACY_PAGE_STORAGE_PREFIX,
   NOTE_STORAGE_PREFIX,
@@ -76,7 +78,8 @@ const clonePendingInserts = (pendingInserts: Iterable<PendingInsert>): PendingIn
 
 const cloneAnnotation = (annotation: WebAnnotationEntity, pageKey: PageKey): WebAnnotationEntity => ({
   ...annotation,
-  pageKey
+  pageKey,
+  width: Math.max(Math.round(annotation.width), ANNOTATION_MIN_WIDTH_PX)
 });
 
 const cloneNote = (note: NoteEntity, page: PageDescriptor): NoteEntity => ({
@@ -220,10 +223,20 @@ const normalizeAnnotations = (
         typeof candidateAnnotation.content === "string" &&
         typeof candidateAnnotation.createdAt === "string" &&
         typeof candidateAnnotation.updatedAt === "string" &&
+        (typeof candidateAnnotation.width === "number" || candidateAnnotation.width === undefined) &&
         typeof candidateAnnotation.x === "number" &&
         typeof candidateAnnotation.y === "number"
     )
-    .map((annotation) => cloneAnnotation(annotation, pageKey));
+    .map((annotation) =>
+      cloneAnnotation(
+        {
+          ...annotation,
+          width:
+            typeof annotation.width === "number" ? annotation.width : ANNOTATION_DEFAULT_WIDTH_PX
+        },
+        pageKey
+      )
+    );
 };
 
 const normalizeLegacyPageRecord = (

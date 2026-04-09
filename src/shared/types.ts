@@ -50,6 +50,7 @@ export interface WebAnnotationEntity {
   id: string;
   pageKey: PageKey;
   content: string;
+  width: number;
   x: number;
   y: number;
   createdAt: string;

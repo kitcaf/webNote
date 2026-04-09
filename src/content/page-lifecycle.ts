@@ -66,6 +66,7 @@ export class PageLifecycleCoordinator {
   private domRebuildObserverStopTimer: number | null = null;
   private domRehydrateTimer: number | null = null;
   private lifecycleRevision = 0;
+  private syncRevision = 0;
 
   constructor(private readonly options: PageLifecycleCoordinatorOptions) {}
 
@@ -86,11 +87,14 @@ export class PageLifecycleCoordinator {
     const nextPage = createPageDescriptor(window.location.href, document.title);
     const didIdentityChange = nextPage.key !== this.currentPage.key;
     this.currentPage = nextPage;
-    this.options.onPageChange(this.currentPage);
 
     if (type === "content/page-changed" && !didIdentityChange) {
       return;
     }
+
+    const syncRevision = ++this.syncRevision;
+    this.resetPageState();
+    this.options.onPageChange(this.currentPage);
 
     const response = (await chrome.runtime.sendMessage({
       type,
@@ -101,6 +105,10 @@ export class PageLifecycleCoordinator {
 
     if (!response.ok) {
       console.error("Failed to load the page record.", response.reason);
+      return;
+    }
+
+    if (syncRevision !== this.syncRevision) {
       return;
     }
 
@@ -127,6 +135,22 @@ export class PageLifecycleCoordinator {
 
       this.options.onPageStateReady(this.currentPageState);
     });
+  }
+
+  private resetPageState(): void {
+    this.lifecycleRevision += 1;
+    this.currentPageState = {
+      pageRecord: null,
+      pendingInserts: [],
+      tabId: null
+    };
+
+    if (this.domRehydrateTimer !== null) {
+      window.clearTimeout(this.domRehydrateTimer);
+      this.domRehydrateTimer = null;
+    }
+
+    this.stopDomRebuildObservation();
   }
 
   private scheduleDomRehydrate(): void {

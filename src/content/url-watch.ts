@@ -1,47 +1,43 @@
+import { PAGE_ROUTE_CHANGE_EVENT } from "../shared/constants";
+
 type UrlChangeHandler = (url: string) => void;
 
-type HistoryMethod = "pushState" | "replaceState";
+interface RouteChangeDetail {
+  href?: string;
+}
+
+const getEventHref = (event: Event): string => {
+  if (!(event instanceof CustomEvent)) {
+    return window.location.href;
+  }
+
+  const eventDetail = event.detail as RouteChangeDetail | null;
+  return typeof eventDetail?.href === "string" ? eventDetail.href : window.location.href;
+};
 
 export const watchUrlChanges = (onChange: UrlChangeHandler): (() => void) => {
-  const eventName = "webnote:url-change";
   let currentUrl = window.location.href;
-  const originalHistoryMethods = new Map<HistoryMethod, History[HistoryMethod]>();
 
-  const notifyIfChanged = (): void => {
-    if (window.location.href === currentUrl) {
+  const notifyIfChanged = (nextUrl: string): void => {
+    if (nextUrl === currentUrl) {
       return;
     }
 
-    currentUrl = window.location.href;
-    onChange(currentUrl);
+    currentUrl = nextUrl;
+    onChange(nextUrl);
   };
 
-  const patchHistoryMethod = (method: HistoryMethod): void => {
-    originalHistoryMethods.set(method, history[method]);
-
-    history[method] = ((...args: Parameters<History[HistoryMethod]>) => {
-      const result = originalHistoryMethods.get(method)?.apply(history, args);
-      window.dispatchEvent(new Event(eventName));
-      return result;
-    }) as History[HistoryMethod];
+  const handleRouteChange = (event: Event): void => {
+    notifyIfChanged(getEventHref(event));
   };
 
-  patchHistoryMethod("pushState");
-  patchHistoryMethod("replaceState");
-
-  const onNativeChange = (): void => notifyIfChanged();
-
-  window.addEventListener(eventName, onNativeChange);
-  window.addEventListener("hashchange", onNativeChange);
-  window.addEventListener("popstate", onNativeChange);
+  window.addEventListener(PAGE_ROUTE_CHANGE_EVENT, handleRouteChange as EventListener);
+  window.addEventListener("popstate", handleRouteChange);
+  window.addEventListener("hashchange", handleRouteChange);
 
   return () => {
-    for (const [method, originalMethod] of originalHistoryMethods.entries()) {
-      history[method] = originalMethod;
-    }
-
-    window.removeEventListener(eventName, onNativeChange);
-    window.removeEventListener("hashchange", onNativeChange);
-    window.removeEventListener("popstate", onNativeChange);
+    window.removeEventListener(PAGE_ROUTE_CHANGE_EVENT, handleRouteChange as EventListener);
+    window.removeEventListener("popstate", handleRouteChange);
+    window.removeEventListener("hashchange", handleRouteChange);
   };
 };

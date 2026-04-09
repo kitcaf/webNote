@@ -80,6 +80,24 @@ const buildContent = () =>
     })
   });
 
+const buildPageRouteBridge = () =>
+  build({
+    ...createBaseConfig(),
+    build: withWatchMode({
+      emptyOutDir: false,
+      outDir: distRoot,
+      rollupOptions: {
+        input: resolve(workspaceRoot, "src/content/page-route-bridge.ts"),
+        output: {
+          ...sharedOutputNames,
+          entryFileNames: "page-route-bridge.js",
+          format: "iife",
+          name: "WebNotePageRouteBridge"
+        }
+      }
+    })
+  });
+
 const buildSidePanel = () =>
   build({
     ...createBaseConfig(),
@@ -99,6 +117,7 @@ const buildSidePanel = () =>
 
 try {
   await buildBackground();
+  await buildPageRouteBridge();
   await buildContent();
   await buildSidePanel();
 } catch (error) {
