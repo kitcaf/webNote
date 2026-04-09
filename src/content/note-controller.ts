@@ -65,7 +65,7 @@ export class NoteController {
 
     for (const note of pageRecord.notes) {
       this.noteEntities.set(note.id, note);
-      const liveAnchor = this.anchorEngine.resolve(note.id, note.selectors);
+      const liveAnchor = this.anchorEngine.resolve(note.id, note.selectors, undefined, note.quoteText);
 
       if (!liveAnchor) {
         continue;
@@ -199,7 +199,12 @@ export class NoteController {
     }
 
     const preferredRange = this.liveAnchors.get(noteId)?.range;
-    const liveAnchor = this.anchorEngine.resolve(noteId, noteEntity.selectors, preferredRange);
+    const liveAnchor = this.anchorEngine.resolve(
+      noteId,
+      noteEntity.selectors,
+      preferredRange,
+      noteEntity.quoteText
+    );
 
     if (!liveAnchor) {
       return {

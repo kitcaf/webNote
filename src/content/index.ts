@@ -2,7 +2,7 @@ import type { BasicResponse, RuntimeMessage } from "../shared/protocol";
 import { AnnotationController } from "./annotation-controller";
 import { ModeController } from "./mode-controller";
 import { NoteController } from "./note-controller";
-import { PageSyncController } from "./page-sync";
+import { PageLifecycleCoordinator } from "./page-lifecycle";
 import { PageToolbar } from "./page-toolbar";
 import { watchUrlChanges } from "./url-watch";
 
@@ -13,7 +13,7 @@ if (!pageRoot) {
 }
 
 let modeController: ModeController;
-let pageSyncController: PageSyncController;
+let pageLifecycleCoordinator: PageLifecycleCoordinator;
 
 const annotationController = new AnnotationController();
 const pageToolbar = new PageToolbar({
@@ -30,7 +30,7 @@ const pageToolbar = new PageToolbar({
   }
 });
 const noteController = new NoteController({
-  getCurrentPage: () => pageSyncController.getCurrentPage(),
+  getCurrentPage: () => pageLifecycleCoordinator.getCurrentPage(),
   pageRoot
 });
 
@@ -50,13 +50,16 @@ modeController = new ModeController({
   }
 });
 
-pageSyncController = new PageSyncController({
+pageLifecycleCoordinator = new PageLifecycleCoordinator({
+  pageRoot,
   onPageChange: (page) => {
     annotationController.setPageKey(page.key);
+    noteController.hydrate(null);
+    annotationController.hydrate(null);
   },
-  onPageRecord: (pageRecord) => {
-    noteController.hydrate(pageRecord);
-    annotationController.hydrate(pageRecord);
+  onPageStateReady: (pageState) => {
+    noteController.hydrate(pageState.pageRecord);
+    annotationController.hydrate(pageState.pageRecord);
   }
 });
 
@@ -71,7 +74,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
       return true;
 
     case "content/activate-note":
-      if (message.payload.pageKey !== pageSyncController.getCurrentPage().key) {
+      if (message.payload.pageKey !== pageLifecycleCoordinator.getCurrentPage().key) {
         sendResponse({
           ok: false,
           reason: "The page has changed and the note belongs to a different URL."
@@ -154,11 +157,19 @@ document.addEventListener("keydown", (event) => {
 
 watchUrlChanges(() => {
   modeController.clear();
-  void pageSyncController.sync("content/page-changed");
+  void pageLifecycleCoordinator.sync("content/page-changed");
 });
 
-window.addEventListener("unload", () => {
+window.addEventListener("pagehide", () => {
+  pageLifecycleCoordinator.dispose();
   noteController.dispose();
+  void annotationController.flushDraft();
 });
 
-void pageSyncController.sync("content/page-ready");
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    void annotationController.flushDraft();
+  }
+});
+
+void pageLifecycleCoordinator.sync("content/page-ready");

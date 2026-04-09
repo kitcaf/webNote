@@ -12,12 +12,19 @@ import type {
 const buildTimestamp = (): string => new Date().toISOString();
 
 const normalizeUrl = (rawUrl: string): string => new URL(rawUrl).toString();
+const normalizeStableUrl = (rawUrl: string): string => {
+  const nextUrl = new URL(rawUrl);
+  nextUrl.hash = "";
+  return nextUrl.toString();
+};
 
-export const buildPageKey = (rawUrl: string): PageKey => normalizeUrl(rawUrl);
+export const buildLegacyPageKey = (rawUrl: string): PageKey => normalizeUrl(rawUrl);
+export const buildPageKey = (rawUrl: string): PageKey => normalizeStableUrl(rawUrl);
 
 export const createPageDescriptor = (rawUrl: string, title: string): PageDescriptor => ({
   key: buildPageKey(rawUrl),
-  url: normalizeUrl(rawUrl),
+  url: normalizeStableUrl(rawUrl),
+  sourceUrl: normalizeUrl(rawUrl),
   title: title.trim() || new URL(rawUrl).hostname,
   lastSeenAt: buildTimestamp()
 });

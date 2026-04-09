@@ -1,4 +1,5 @@
 import {
+  ANNOTATION_AUTOSAVE_DEBOUNCE_MS,
   ANNOTATION_DELETE_BUTTON_LABEL,
   ANNOTATION_DELETE_BUTTON_TEXT,
   ANNOTATION_PLACEHOLDER
@@ -18,6 +19,7 @@ interface AnnotationOverlayHandlers {
 
 interface DraftAnnotationState {
   annotationId?: string;
+  autosaveTimer: number | null;
   editorElement: HTMLTextAreaElement;
   x: number;
   y: number;
@@ -136,6 +138,18 @@ const autosizeEditor = (editorElement: HTMLTextAreaElement): void => {
   editorElement.style.height = `${Math.max(MIN_EDITOR_HEIGHT_PX, editorElement.scrollHeight)}px`;
 };
 
+const safeRemoveElement = (element: Element | null | undefined): void => {
+  if (!element || !element.parentNode) {
+    return;
+  }
+
+  try {
+    element.parentNode.removeChild(element);
+  } catch (error) {
+    console.warn("WebNote skipped removing an annotation element that was already detached.", error);
+  }
+};
+
 export class AnnotationOverlay {
   private readonly layer: HTMLDivElement;
   private readonly cards = new Map<string, HTMLDivElement>();
@@ -144,6 +158,7 @@ export class AnnotationOverlay {
   private draftState: DraftAnnotationState | null = null;
   private interactive = false;
   private isCommittingDraft = false;
+  private shouldFinalizeDraftAfterCommit = false;
 
   constructor(private readonly handlers: AnnotationOverlayHandlers) {
     injectOverlayStyles();
@@ -171,7 +186,7 @@ export class AnnotationOverlay {
     this.cancelDraft();
 
     for (const cardElement of this.cards.values()) {
-      cardElement.remove();
+      safeRemoveElement(cardElement);
     }
 
     this.cards.clear();
@@ -184,7 +199,7 @@ export class AnnotationOverlay {
 
   upsertAnnotation(annotation: WebAnnotationEntity): void {
     this.annotations.set(annotation.id, annotation);
-    this.cards.get(annotation.id)?.remove();
+    safeRemoveElement(this.cards.get(annotation.id));
 
     const cardElement = document.createElement("div");
     cardElement.className = "webnote-annotation-text";
@@ -245,7 +260,7 @@ export class AnnotationOverlay {
 
   removeAnnotation(annotationId: string): void {
     this.annotations.delete(annotationId);
-    this.cards.get(annotationId)?.remove();
+    safeRemoveElement(this.cards.get(annotationId));
     this.cards.delete(annotationId);
   }
 
@@ -262,6 +277,8 @@ export class AnnotationOverlay {
       return;
     }
 
+    this.clearAutosaveTimer(this.draftState);
+
     if (this.draftState.annotationId) {
       const existingAnnotation = this.annotations.get(this.draftState.annotationId);
 
@@ -271,6 +288,12 @@ export class AnnotationOverlay {
     }
 
     this.teardownDraftEditor();
+  }
+
+  async flushDraft(): Promise<void> {
+    await this.commitDraft({
+      preserveEditor: false
+    });
   }
 
   private openDraft(input: {
@@ -307,9 +330,12 @@ export class AnnotationOverlay {
     });
     editorElement.addEventListener("input", () => {
       autosizeEditor(editorElement);
+      this.scheduleAutosave();
     });
     editorElement.addEventListener("blur", () => {
-      void this.commitDraft();
+      void this.commitDraft({
+        preserveEditor: false
+      });
     });
     editorElement.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") {
@@ -324,13 +350,14 @@ export class AnnotationOverlay {
     this.layer.append(wrapperElement);
     this.draftState = {
       annotationId: input.annotationId,
+      autosaveTimer: null,
       editorElement,
       x,
       y
     };
 
     if (input.annotationId) {
-      this.cards.get(input.annotationId)?.remove();
+      safeRemoveElement(this.cards.get(input.annotationId));
       this.cards.delete(input.annotationId);
     }
 
@@ -339,23 +366,70 @@ export class AnnotationOverlay {
     editorElement.setSelectionRange(editorElement.value.length, editorElement.value.length);
   }
 
-  private async commitDraft(): Promise<void> {
-    if (!this.currentPageKey || !this.draftState || this.isCommittingDraft) {
+  private clearAutosaveTimer(draftState: DraftAnnotationState): void {
+    if (draftState.autosaveTimer === null) {
+      return;
+    }
+
+    window.clearTimeout(draftState.autosaveTimer);
+    draftState.autosaveTimer = null;
+  }
+
+  private scheduleAutosave(): void {
+    if (!this.draftState) {
+      return;
+    }
+
+    this.clearAutosaveTimer(this.draftState);
+
+    if (this.draftState.editorElement.value.trim().length === 0) {
+      return;
+    }
+
+    this.draftState.autosaveTimer = window.setTimeout(() => {
+      if (!this.draftState) {
+        return;
+      }
+
+      this.draftState.autosaveTimer = null;
+      void this.commitDraft({
+        preserveEditor: true
+      });
+    }, ANNOTATION_AUTOSAVE_DEBOUNCE_MS);
+  }
+
+  private async commitDraft(options: {
+    preserveEditor: boolean;
+  }): Promise<void> {
+    if (!this.currentPageKey || !this.draftState) {
+      return;
+    }
+
+    if (this.isCommittingDraft) {
+      if (!options.preserveEditor) {
+        this.shouldFinalizeDraftAfterCommit = true;
+      }
+
       return;
     }
 
     this.isCommittingDraft = true;
+    this.shouldFinalizeDraftAfterCommit = false;
     const draftState = this.draftState;
     const nextContent = draftState.editorElement.value.trim();
+    this.clearAutosaveTimer(draftState);
 
     try {
       if (!nextContent) {
-        if (draftState.annotationId) {
+        if (draftState.annotationId && !options.preserveEditor) {
           await this.handlers.onDelete(draftState.annotationId);
           this.removeAnnotation(draftState.annotationId);
         }
 
-        this.teardownDraftEditor();
+        if (!options.preserveEditor) {
+          this.teardownDraftEditor();
+        }
+
         return;
       }
 
@@ -367,12 +441,20 @@ export class AnnotationOverlay {
         y: draftState.y
       });
 
-      this.teardownDraftEditor();
-      this.upsertAnnotation(savedAnnotation);
+      this.annotations.set(savedAnnotation.id, savedAnnotation);
+
+      if (this.draftState === draftState) {
+        this.draftState.annotationId = savedAnnotation.id;
+      }
+
+      if (!options.preserveEditor) {
+        this.teardownDraftEditor();
+        this.upsertAnnotation(savedAnnotation);
+      }
     } catch (error) {
       console.error("WebNote failed to commit the page annotation.", error);
 
-      if (draftState.annotationId) {
+      if (!options.preserveEditor && draftState.annotationId) {
         const existingAnnotation = this.annotations.get(draftState.annotationId);
 
         if (existingAnnotation) {
@@ -380,9 +462,18 @@ export class AnnotationOverlay {
         }
       }
 
-      this.teardownDraftEditor();
+      if (!options.preserveEditor) {
+        this.teardownDraftEditor();
+      }
     } finally {
       this.isCommittingDraft = false;
+
+      if (this.shouldFinalizeDraftAfterCommit) {
+        this.shouldFinalizeDraftAfterCommit = false;
+        void this.commitDraft({
+          preserveEditor: false
+        });
+      }
     }
   }
 
@@ -391,8 +482,9 @@ export class AnnotationOverlay {
       return;
     }
 
+    this.clearAutosaveTimer(this.draftState);
     const editorWrapper = this.draftState.editorElement.parentElement;
-    editorWrapper?.remove();
+    safeRemoveElement(editorWrapper);
     this.draftState = null;
   }
 }

@@ -5,6 +5,12 @@ const normalizeForComparison = (value: string): string => value.replace(/\s+/g, 
 const cloneRect = (rect: DOMRect | DOMRectReadOnly): DOMRect =>
   new DOMRect(rect.x, rect.y, rect.width, rect.height);
 
+interface NormalizedTextIndex {
+  text: string;
+  startOffsets: number[];
+  endOffsets: number[];
+}
+
 export const snapshotRangeRects = (range: Range): DOMRect[] =>
   [...range.getClientRects()]
     .map((rect) => cloneRect(rect))
@@ -46,6 +52,7 @@ const scoreContext = (text: string, selector: SerializedSelector, start: number,
 export class AnchorEngine {
   private readonly mutationObserver: MutationObserver;
   private cachedIndex: TextIndex | null = null;
+  private cachedNormalizedIndex: NormalizedTextIndex | null = null;
   private isDirty = true;
 
   constructor(private readonly root: HTMLElement) {
@@ -67,10 +74,64 @@ export class AnchorEngine {
   private getTextIndex(): TextIndex {
     if (!this.cachedIndex || this.isDirty) {
       this.cachedIndex = buildTextIndex(this.root);
+      this.cachedNormalizedIndex = null;
       this.isDirty = false;
     }
 
     return this.cachedIndex;
+  }
+
+  private getNormalizedTextIndex(): NormalizedTextIndex {
+    if (this.cachedNormalizedIndex) {
+      return this.cachedNormalizedIndex;
+    }
+
+    const rawText = this.getTextIndex().text;
+    const characters: string[] = [];
+    const startOffsets: number[] = [];
+    const endOffsets: number[] = [];
+
+    for (let rawIndex = 0; rawIndex < rawText.length; rawIndex += 1) {
+      const character = rawText[rawIndex];
+
+      if (!character) {
+        continue;
+      }
+
+      if (/\s/.test(character)) {
+        if (characters.length === 0) {
+          continue;
+        }
+
+        if (characters[characters.length - 1] === " ") {
+          endOffsets[endOffsets.length - 1] = rawIndex + 1;
+          continue;
+        }
+
+        characters.push(" ");
+        startOffsets.push(rawIndex);
+        endOffsets.push(rawIndex + 1);
+        continue;
+      }
+
+      characters.push(character);
+      startOffsets.push(rawIndex);
+      endOffsets.push(rawIndex + 1);
+    }
+
+    if (characters[characters.length - 1] === " ") {
+      characters.pop();
+      startOffsets.pop();
+      endOffsets.pop();
+    }
+
+    this.cachedNormalizedIndex = {
+      text: characters.join(""),
+      startOffsets,
+      endOffsets
+    };
+
+    return this.cachedNormalizedIndex;
   }
 
   private isRangeUsable(range: Range): boolean {
@@ -146,11 +207,97 @@ export class AnchorEngine {
     return createLiveAnchor(noteId, candidateRange, "quote");
   }
 
-  resolve(noteId: string, selector: SerializedSelector, preferredRange?: Range): LiveAnchor | null {
+  private resolveByNormalizedQuote(
+    noteId: string,
+    selector: SerializedSelector,
+    fallbackQuoteText?: string
+  ): LiveAnchor | null {
+    const normalizedQuote = normalizeForComparison(fallbackQuoteText ?? selector.quote.exact);
+
+    if (!normalizedQuote) {
+      return null;
+    }
+
+    const textIndex = this.getTextIndex();
+    const normalizedIndex = this.getNormalizedTextIndex();
+    const normalizedPrefix = normalizeForComparison(selector.quote.prefix);
+    const normalizedSuffix = normalizeForComparison(selector.quote.suffix);
+    let bestMatch: { start: number; end: number; score: number } | null = null;
+    let searchOffset = 0;
+
+    while (searchOffset < normalizedIndex.text.length) {
+      const matchOffset = normalizedIndex.text.indexOf(normalizedQuote, searchOffset);
+
+      if (matchOffset < 0) {
+        break;
+      }
+
+      const matchEnd = matchOffset + normalizedQuote.length;
+      let score = 0;
+
+      if (
+        normalizedPrefix &&
+        normalizedIndex.text.slice(Math.max(0, matchOffset - normalizedPrefix.length), matchOffset) === normalizedPrefix
+      ) {
+        score += normalizedPrefix.length;
+      }
+
+      if (
+        normalizedSuffix &&
+        normalizedIndex.text.slice(matchEnd, matchEnd + normalizedSuffix.length) === normalizedSuffix
+      ) {
+        score += normalizedSuffix.length;
+      }
+
+      if (!bestMatch || score > bestMatch.score) {
+        bestMatch = {
+          start: matchOffset,
+          end: matchEnd,
+          score
+        };
+      }
+
+      searchOffset = matchOffset + Math.max(normalizedQuote.length, 1);
+    }
+
+    if (!bestMatch) {
+      return null;
+    }
+
+    const rawStart = normalizedIndex.startOffsets[bestMatch.start];
+    const rawEnd = normalizedIndex.endOffsets[bestMatch.end - 1];
+
+    if (rawStart === undefined || rawEnd === undefined || rawEnd <= rawStart) {
+      return null;
+    }
+
+    const candidateRange = offsetsToRange(textIndex, rawStart, rawEnd);
+
+    if (!candidateRange) {
+      return null;
+    }
+
+    if (normalizeForComparison(candidateRange.toString()) !== normalizedQuote) {
+      return null;
+    }
+
+    return createLiveAnchor(noteId, candidateRange, "quote");
+  }
+
+  resolve(
+    noteId: string,
+    selector: SerializedSelector,
+    preferredRange?: Range,
+    fallbackQuoteText?: string
+  ): LiveAnchor | null {
     if (preferredRange && this.isRangeUsable(preferredRange)) {
       return createLiveAnchor(noteId, preferredRange.cloneRange(), "live");
     }
 
-    return this.resolveByPosition(noteId, selector) ?? this.resolveByQuote(noteId, selector);
+    return (
+      this.resolveByPosition(noteId, selector) ??
+      this.resolveByQuote(noteId, selector) ??
+      this.resolveByNormalizedQuote(noteId, selector, fallbackQuoteText)
+    );
   }
 }

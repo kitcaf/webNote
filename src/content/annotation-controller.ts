@@ -6,6 +6,7 @@ import { AnnotationOverlay } from "./annotation-overlay";
 export class AnnotationController {
   private readonly overlay: AnnotationOverlay;
   private readonly annotations = new Map<string, WebAnnotationEntity>();
+  private currentPageKey: PageKey | null = null;
 
   constructor() {
     this.overlay = new AnnotationOverlay({
@@ -25,16 +26,29 @@ export class AnnotationController {
   }
 
   setPageKey(pageKey: PageKey): void {
+    if (this.currentPageKey === pageKey) {
+      return;
+    }
+
+    this.currentPageKey = pageKey;
+    this.annotations.clear();
     this.overlay.setPageKey(pageKey);
+    this.overlay.hydrate([]);
   }
 
   hydrate(pageRecord: PageRecord | null): void {
     this.annotations.clear();
 
-    if (pageRecord) {
-      for (const annotation of pageRecord.annotations) {
-        this.annotations.set(annotation.id, annotation);
-      }
+    if (!pageRecord) {
+      this.overlay.hydrate([]);
+      return;
+    }
+
+    this.currentPageKey = pageRecord.page.key;
+    this.overlay.setPageKey(pageRecord.page.key);
+
+    for (const annotation of pageRecord.annotations) {
+      this.annotations.set(annotation.id, annotation);
     }
 
     this.overlay.hydrate([...this.annotations.values()]);
@@ -46,6 +60,10 @@ export class AnnotationController {
 
   cancelDraft(): void {
     this.overlay.cancelDraft();
+  }
+
+  async flushDraft(): Promise<void> {
+    await this.overlay.flushDraft();
   }
 
   private async saveAnnotation(input: {

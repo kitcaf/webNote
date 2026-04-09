@@ -5,6 +5,7 @@ export type NoteKind = "excerpt" | "highlight";
 export interface PageDescriptor {
   key: PageKey;
   url: string;
+  sourceUrl: string;
   title: string;
   lastSeenAt: string;
 }
@@ -63,12 +64,23 @@ export interface PageDocumentEntity {
   updatedAt: string;
 }
 
+export interface PageMetaEntity {
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface PageRecord {
   page: PageDescriptor;
   document: PageDocumentEntity;
   annotations: WebAnnotationEntity[];
   notes: NoteEntity[];
+  meta: PageMetaEntity;
+}
+
+export interface PageViewState {
+  pageRecord: PageRecord | null;
   pendingInserts: PendingInsert[];
+  tabId: number | null;
 }
 
 export interface LiveAnchor {

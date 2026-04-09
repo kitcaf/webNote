@@ -2,7 +2,8 @@ import "../styles/sidepanel.css";
 
 import { DOCUMENT_SAVE_DEBOUNCE_MS, SIDEPANEL_PORT_NAME } from "../shared/constants";
 import type { BasicResponse, PageRecordResponse, RuntimeMessage } from "../shared/protocol";
-import type { PageKey, PageRecord } from "../shared/types";
+import type { PageKey, PageRecord, PageViewState, PendingInsert } from "../shared/types";
+import { deleteCachedDraft } from "./draft-cache";
 import { EditorSessionManager } from "./editor";
 
 const editorSurface = document.getElementById("editor-surface");
@@ -19,22 +20,51 @@ let activePageRecord: PageRecord | null = null;
 let saveTimer: number | null = null;
 let insertedPendingNoteIds = new Set<string>();
 
-const persistDocument = async (): Promise<void> => {
+const getCurrentDraftSnapshot = (): { markdown: string; pageKey: PageKey } | null => {
   if (!activePageRecord) {
-    return;
+    return null;
   }
 
+  return {
+    markdown: editorSessionManager.getMarkdown(),
+    pageKey: activePageRecord.page.key
+  };
+};
+
+const persistDocumentSnapshot = async (snapshot: {
+  markdown: string;
+  pageKey: PageKey;
+}): Promise<void> => {
   const response = (await chrome.runtime.sendMessage({
     type: "panel/save-document",
     payload: {
-      pageKey: activePageRecord.page.key,
-      markdown: editorSessionManager.getMarkdown()
+      pageKey: snapshot.pageKey,
+      markdown: snapshot.markdown
     }
   } satisfies RuntimeMessage)) as BasicResponse;
 
   if (!response.ok) {
     console.error("WebNote failed to save the current document.", response.reason);
   }
+};
+
+const persistDocument = async (): Promise<void> => {
+  const snapshot = getCurrentDraftSnapshot();
+
+  if (!snapshot) {
+    return;
+  }
+
+  await persistDocumentSnapshot(snapshot);
+};
+
+const flushPendingDocumentSave = async (): Promise<void> => {
+  if (saveTimer !== null) {
+    window.clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+
+  await persistDocument();
 };
 
 const scheduleDocumentSave = (): void => {
@@ -62,28 +92,36 @@ const flushPendingInserts = async (pageKey: PageKey, noteIds: string[]): Promise
   } satisfies RuntimeMessage);
 };
 
-const consumePendingInserts = async (pageRecord: PageRecord): Promise<void> => {
-  const pendingInserts = pageRecord.pendingInserts.filter((item) => !insertedPendingNoteIds.has(item.noteId));
+const consumePendingInserts = async (
+  pageKey: PageKey,
+  pendingInserts: PendingInsert[]
+): Promise<void> => {
+  const nextPendingInserts = pendingInserts.filter((item) => !insertedPendingNoteIds.has(item.noteId));
 
-  if (pendingInserts.length === 0) {
+  if (nextPendingInserts.length === 0) {
     return;
   }
 
-  for (const pendingInsert of pendingInserts) {
+  for (const pendingInsert of nextPendingInserts) {
     editorSessionManager.insertMarkdown(pendingInsert.markdownSnippet);
     insertedPendingNoteIds.add(pendingInsert.noteId);
   }
 
   scheduleDocumentSave();
   await flushPendingInserts(
-    pageRecord.page.key,
-    pendingInserts.map((item) => item.noteId)
+    pageKey,
+    nextPendingInserts.map((item) => item.noteId)
   );
 };
 
-const applyPageRecord = async (pageRecord: PageRecord | null): Promise<void> => {
+const applyPageState = async (pageState: PageViewState): Promise<void> => {
+  const pageRecord = pageState.pageRecord;
   const previousPageKey = activePageRecord?.page.key ?? null;
-  activePageRecord = pageRecord;
+  const nextPageKey = pageRecord?.page.key ?? null;
+
+  if (previousPageKey && previousPageKey !== nextPageKey) {
+    await flushPendingDocumentSave();
+  }
 
   if (!pageRecord) {
     if (saveTimer !== null) {
@@ -91,24 +129,29 @@ const applyPageRecord = async (pageRecord: PageRecord | null): Promise<void> => 
       saveTimer = null;
     }
 
+    activePageRecord = null;
     insertedPendingNoteIds = new Set();
     editorSessionManager.clear();
     return;
   }
+
+  deleteCachedDraft(pageRecord.page.key);
+  deleteCachedDraft(pageRecord.page.sourceUrl);
+  activePageRecord = pageRecord;
 
   if (previousPageKey !== pageRecord.page.key) {
     insertedPendingNoteIds = new Set();
   }
 
   await editorSessionManager.ensureSession({
-    initialMarkdown: pageRecord.document.markdown,
+    initialMarkdown: activePageRecord.document.markdown,
     pageKey: pageRecord.page.key,
     onInput: () => {
       scheduleDocumentSave();
     }
   });
 
-  await consumePendingInserts(pageRecord);
+  await consumePendingInserts(activePageRecord.page.key, pageState.pendingInserts);
 };
 
 const bootstrap = async (): Promise<void> => {
@@ -121,7 +164,7 @@ const bootstrap = async (): Promise<void> => {
     return;
   }
 
-  await applyPageRecord(response.pageRecord);
+  await applyPageState(response.pageState);
 };
 
 sidePanelPort.onMessage.addListener((message: RuntimeMessage) => {
@@ -129,7 +172,19 @@ sidePanelPort.onMessage.addListener((message: RuntimeMessage) => {
     return;
   }
 
-  void applyPageRecord(message.payload.pageRecord);
+  void applyPageState(message.payload);
+});
+
+const flushDraftState = (): void => {
+  void flushPendingDocumentSave();
+};
+
+window.addEventListener("pagehide", flushDraftState);
+window.addEventListener("beforeunload", flushDraftState);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    flushDraftState();
+  }
 });
 
 void bootstrap();

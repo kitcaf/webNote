@@ -9,13 +9,15 @@ import type {
   RuntimeMessage
 } from "../shared/protocol";
 import { createPageDescriptor } from "../shared/serialization";
-import type { PageDescriptor, PageRecord } from "../shared/types";
+import type { PageDescriptor, PageViewState } from "../shared/types";
 import {
   deleteNote,
   deleteAnnotation,
   flushPendingInserts,
+  getPendingInserts,
   getPageRecord,
   getOrCreatePageRecord,
+  replaceAnnotations,
   saveDocument,
   upsertAnnotation,
   upsertNote
@@ -77,11 +79,12 @@ const getPageForTab = async (tab: chrome.tabs.Tab | null): Promise<PageDescripto
   return fallbackPage;
 };
 
-const getActivePageRecord = async (): Promise<{ pageRecord: PageRecord | null; tabId: number | null }> => {
+const getActivePageState = async (): Promise<PageViewState> => {
   const activeTab = await getActiveTab();
 
   if (!activeTab?.id) {
     return {
+      pendingInserts: [],
       pageRecord: null,
       tabId: null
     };
@@ -91,15 +94,18 @@ const getActivePageRecord = async (): Promise<{ pageRecord: PageRecord | null; t
 
   if (!page) {
     return {
+      pendingInserts: [],
       pageRecord: null,
       tabId: activeTab.id
     };
   }
 
   const existingPageRecord = await getPageRecord(page.key);
+  const pageRecord = existingPageRecord ?? (await getOrCreatePageRecord(page));
 
   return {
-    pageRecord: existingPageRecord ?? (await getOrCreatePageRecord(page)),
+    pendingInserts: getPendingInserts(page.key),
+    pageRecord,
     tabId: activeTab.id
   };
 };
@@ -145,7 +151,7 @@ const broadcastToSidePanelPorts = (message: RuntimeMessage): void => {
 };
 
 const broadcastActivePage = async (): Promise<void> => {
-  const state = await getActivePageRecord();
+  const state = await getActivePageState();
   broadcastToSidePanelPorts({
     type: "background/page-updated",
     payload: state
@@ -220,6 +226,11 @@ const handleBackgroundMessage = async (
       }
 
       const pageRecord = await getOrCreatePageRecord(message.payload.page);
+      const pageState: PageViewState = {
+        pendingInserts: getPendingInserts(message.payload.page.key),
+        pageRecord,
+        tabId: sender.tab?.id ?? null
+      };
 
       if (sender.tab?.active) {
         await broadcastActivePage();
@@ -227,14 +238,13 @@ const handleBackgroundMessage = async (
 
       return {
         ok: true,
-        pageRecord,
-        tabId: sender.tab?.id ?? null
+        pageState
       };
     }
 
     case "content/create-note": {
       const shouldOpenSidePanel = message.payload.options?.openSidePanel ?? true;
-      const pageRecord = await upsertNote(message.payload.note, {
+      await upsertNote(message.payload.note, {
         enqueueInsert: message.payload.options?.enqueueInsert ?? true
       });
 
@@ -243,6 +253,7 @@ const handleBackgroundMessage = async (
           key: message.payload.note.pageKey,
           title: message.payload.note.pageTitle,
           url: message.payload.note.pageUrl,
+          sourceUrl: sender.tab.url ?? message.payload.note.pageUrl,
           lastSeenAt: message.payload.note.updatedAt
         });
 
@@ -276,6 +287,12 @@ const handleBackgroundMessage = async (
       return { ok: true };
     }
 
+    case "content/replace-annotations": {
+      await replaceAnnotations(message.payload.pageKey, message.payload.annotations);
+      await broadcastActivePage();
+      return { ok: true };
+    }
+
     case "content/delete-note": {
       await deleteNote(message.payload.pageKey, message.payload.noteId);
       await broadcastActivePage();
@@ -283,11 +300,10 @@ const handleBackgroundMessage = async (
     }
 
     case "panel/bootstrap": {
-      const state = await getActivePageRecord();
+      const state = await getActivePageState();
       return {
         ok: true,
-        pageRecord: state.pageRecord,
-        tabId: state.tabId
+        pageState: state
       };
     }
 
@@ -301,6 +317,7 @@ const handleBackgroundMessage = async (
 
     case "panel/flush-pending": {
       await flushPendingInserts(message.payload.pageKey, message.payload.noteIds);
+      await broadcastActivePage();
       return { ok: true };
     }
 

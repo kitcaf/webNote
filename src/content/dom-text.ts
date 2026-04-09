@@ -75,6 +75,44 @@ export const buildTextIndex = (root: HTMLElement): TextIndex => {
   };
 };
 
+const clampOffset = (value: number, min: number, max: number): number => Math.min(Math.max(value, min), max);
+
+const getBoundaryOffset = (
+  index: TextIndex,
+  container: Node,
+  offset: number
+): number | null => {
+  let currentOffset = 0;
+
+  for (const record of index.records) {
+    if (record.node === container) {
+      return record.start + clampOffset(offset, 0, record.node.data.length);
+    }
+
+    const nodeRange = document.createRange();
+    nodeRange.selectNodeContents(record.node);
+
+    try {
+      const relation = nodeRange.comparePoint(container, offset);
+
+      if (relation === 1) {
+        currentOffset = record.end;
+        continue;
+      }
+
+      if (relation === 0) {
+        return currentOffset;
+      }
+
+      return currentOffset;
+    } catch {
+      currentOffset = record.end;
+    }
+  }
+
+  return index.records.length > 0 ? currentOffset : null;
+};
+
 export const rangeToOffsets = (
   root: HTMLElement,
   range: Range
@@ -83,17 +121,17 @@ export const rangeToOffsets = (
     return null;
   }
 
-  const startRange = document.createRange();
-  startRange.selectNodeContents(root);
-  startRange.setEnd(range.startContainer, range.startOffset);
+  const textIndex = buildTextIndex(root);
+  const start = getBoundaryOffset(textIndex, range.startContainer, range.startOffset);
+  const end = getBoundaryOffset(textIndex, range.endContainer, range.endOffset);
 
-  const endRange = document.createRange();
-  endRange.selectNodeContents(root);
-  endRange.setEnd(range.endContainer, range.endOffset);
+  if (start === null || end === null) {
+    return null;
+  }
 
   return {
-    start: startRange.toString().length,
-    end: endRange.toString().length
+    start,
+    end
   };
 };
 

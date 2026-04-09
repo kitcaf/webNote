@@ -17,3 +17,7 @@ export const NOTE_META_SEPARATOR = " | ";
 export const ANNOTATION_DELETE_BUTTON_TEXT = "x";
 export const ANNOTATION_DELETE_BUTTON_LABEL = "Delete annotation";
 export const ANNOTATION_PLACEHOLDER = "Type here";
+export const ANNOTATION_AUTOSAVE_DEBOUNCE_MS = 300;
+export const ANNOTATION_STORAGE_PREFIX = `${APP_NAMESPACE}:annotations:`;
+export const ANNOTATION_DRAFT_STORAGE_PREFIX = `${APP_NAMESPACE}:annotation-draft:`;
+export const DEBUG_LOG_PREFIX = "[WebNote]";

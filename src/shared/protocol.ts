@@ -3,6 +3,7 @@ import type {
   PageDescriptor,
   PageKey,
   PageRecord,
+  PageViewState,
   WebAnnotationEntity
 } from "./types";
 
@@ -54,6 +55,14 @@ export interface ContentDeleteAnnotationMessage {
   };
 }
 
+export interface ContentReplaceAnnotationsMessage {
+  type: "content/replace-annotations";
+  payload: {
+    annotations: WebAnnotationEntity[];
+    pageKey: PageKey;
+  };
+}
+
 export interface ContentDeleteNoteMessage {
   type: "content/delete-note";
   payload: {
@@ -100,10 +109,7 @@ export interface PanelOpenSourceMessage {
 
 export interface BackgroundPageUpdatedMessage {
   type: "background/page-updated";
-  payload: {
-    pageRecord: PageRecord | null;
-    tabId: number | null;
-  };
+  payload: PageViewState;
 }
 
 export type RuntimeMessage =
@@ -116,6 +122,7 @@ export type RuntimeMessage =
   | ContentOpenSidePanelMessage
   | ContentPageChangedMessage
   | ContentPageReadyMessage
+  | ContentReplaceAnnotationsMessage
   | ContentUpsertAnnotationMessage
   | PanelBootstrapMessage
   | PanelFlushPendingMessage
@@ -128,6 +135,5 @@ export interface BasicResponse {
 }
 
 export interface PageRecordResponse extends BasicResponse {
-  pageRecord: PageRecord | null;
-  tabId: number | null;
+  pageState: PageViewState;
 }
