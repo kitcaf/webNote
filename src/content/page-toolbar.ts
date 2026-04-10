@@ -70,6 +70,7 @@ const injectToolbarStyles = (): void => {
       z-index: 2147483646;
       display: grid;
       gap: 8px;
+      justify-items: center;
       padding: 8px 12px 8px 6px;
       border: 1px solid rgba(15, 23, 42, 0.08);
       border-right: 0;
@@ -82,7 +83,9 @@ const injectToolbarStyles = (): void => {
     }
 
     .webnote-page-toolbar__modes {
-      display: grid;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
       gap: 6px;
     }
 
@@ -124,14 +127,15 @@ const injectToolbarStyles = (): void => {
 
     .webnote-page-toolbar__colors {
       display: none;
-      grid-auto-flow: column;
+      flex-direction: column;
+      align-items: center;
       gap: 6px;
       padding-top: 6px;
       border-top: 1px solid rgba(15, 23, 42, 0.08);
     }
 
     .webnote-page-toolbar__colors--visible {
-      display: grid;
+      display: flex;
     }
 
     .webnote-page-toolbar__swatch {
