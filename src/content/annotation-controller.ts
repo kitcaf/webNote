@@ -1,39 +1,97 @@
 import {
+  ANNOTATION_AUTOSAVE_DEBOUNCE_MS,
   ANNOTATION_DEFAULT_WIDTH_PX,
-  ANNOTATION_MIN_WIDTH_PX,
-  ANNOTATION_WIDTH_PREFERENCE_STORAGE_KEY
+  ANNOTATION_MIN_WIDTH_PX
 } from "../shared/constants";
-import type { BasicResponse, RuntimeMessage } from "../shared/protocol";
-import { createWebAnnotationEntity } from "../shared/serialization";
 import type { PageKey, PageRecord, WebAnnotationEntity } from "../shared/types";
-import { AnnotationOverlay } from "./annotation-overlay";
+import { AnnotationCanvas } from "./annotation-canvas";
+import { normalizeAnnotationFrame, type AnnotationFrame } from "./annotation-dom";
+import { AnnotationEditor } from "./annotation-editor";
+import {
+  AnnotationPersistence,
+  type AnnotationCommitResult
+} from "./annotation-persistence";
+import { AnnotationPointerController } from "./annotation-pointer-controller";
 import { isExpectedRuntimeLifecycleError } from "./runtime-errors";
+import { AnnotationStateMachine, type AnnotationSession } from "./annotation-state-machine";
+import { AnnotationStore } from "./annotation-store";
 
-const clampPreferredWidth = (width: number): number => Math.max(Math.round(width), ANNOTATION_MIN_WIDTH_PX);
+interface CommitOptions {
+  closeOnSuccess: boolean;
+  reopenOnFailure: boolean;
+}
+
+const buildCommitKey = (session: AnnotationSession): string =>
+  `${session.sessionId}:${session.draftRevision}`;
+
+const toFrame = (annotation: Pick<WebAnnotationEntity, "width" | "x" | "y">): AnnotationFrame => ({
+  width: annotation.width,
+  x: annotation.x,
+  y: annotation.y
+});
+
+const cloneFrame = (frame: AnnotationFrame): AnnotationFrame => ({
+  width: frame.width,
+  x: frame.x,
+  y: frame.y
+});
 
 export class AnnotationController {
-  private readonly overlay: AnnotationOverlay;
-  private readonly annotations = new Map<string, WebAnnotationEntity>();
+  private readonly canvas: AnnotationCanvas;
+  private readonly commitRequests = new Map<string, Promise<AnnotationCommitResult>>();
+  private readonly editor: AnnotationEditor;
+  private readonly persistence = new AnnotationPersistence();
+  private readonly pointerController = new AnnotationPointerController();
+  private readonly stateMachine = new AnnotationStateMachine();
+  private readonly store = new AnnotationStore();
+  private autosaveTimer: number | null = null;
   private currentPageKey: PageKey | null = null;
+  private interactive = false;
   private preferredWidth = ANNOTATION_DEFAULT_WIDTH_PX;
 
   constructor() {
-    this.overlay = new AnnotationOverlay({
-      onDelete: async (annotationId) => {
-        await this.deleteAnnotation(annotationId);
+    this.canvas = new AnnotationCanvas({
+      onDelete: (annotationId) => {
+        void this.deleteAnnotation(annotationId);
       },
-      onSave: async (input) => this.saveAnnotation(input)
+      onPointerDown: (annotationId, target, event) => {
+        this.handleCanvasPointerDown(annotationId, target, event);
+      }
     });
-    this.overlay.setPreferredDraftWidth(this.preferredWidth);
+    this.editor = new AnnotationEditor({
+      onBlurRequest: () => {
+        if (this.pointerController.isActive()) {
+          return;
+        }
+
+        void this.finalizeEditingSession({
+          reopenOnFailure: true
+        });
+      },
+      onEscape: () => {
+        this.cancelDraft();
+      },
+      onInput: (draftText) => {
+        this.handleEditorInput(draftText);
+      },
+      onResizePointerDown: (event) => {
+        this.handleEditorResizePointerDown(event);
+      }
+    });
     void this.loadPreferredWidth();
   }
 
   isOwnedTarget(target: EventTarget | null): boolean {
-    return this.overlay.isOwnedTarget(target);
+    return this.canvas.isOwnedTarget(target) || this.editor.isOwnedTarget(target);
   }
 
   setInteractive(interactive: boolean): void {
-    this.overlay.setInteractive(interactive);
+    this.interactive = interactive;
+    this.canvas.setInteractive(interactive);
+
+    if (!interactive) {
+      this.pointerController.clear();
+    }
   }
 
   setPageKey(pageKey: PageKey): void {
@@ -42,164 +100,534 @@ export class AnnotationController {
     }
 
     this.currentPageKey = pageKey;
-    this.annotations.clear();
-    this.overlay.setPageKey(pageKey);
-    this.overlay.hydrate([]);
+    this.resetRuntimeState();
+    this.store.clear();
+    this.canvas.setAnnotations([]);
   }
 
   hydrate(pageRecord: PageRecord | null): void {
-    this.annotations.clear();
+    this.resetRuntimeState();
+    this.store.clear();
 
     if (!pageRecord) {
-      this.overlay.hydrate([]);
+      this.canvas.setAnnotations([]);
       return;
     }
 
     this.currentPageKey = pageRecord.page.key;
-    this.overlay.setPageKey(pageRecord.page.key);
-
-    for (const annotation of pageRecord.annotations) {
-      this.annotations.set(annotation.id, annotation);
-    }
-
-    this.overlay.hydrate([...this.annotations.values()]);
+    this.store.setAll(pageRecord.annotations);
+    this.canvas.setAnnotations(this.store.getAll());
   }
 
   openDraftAt(pageX: number, pageY: number): void {
-    this.overlay.openDraftAt(pageX, pageY, this.preferredWidth);
+    if (!this.currentPageKey) {
+      return;
+    }
+
+    this.beginNextSession(() => {
+      const session = this.stateMachine.openDraft({
+        draftText: "",
+        frame: normalizeAnnotationFrame({
+          width: this.preferredWidth,
+          x: pageX,
+          y: pageY
+        }),
+        pageKey: this.currentPageKey as PageKey
+      });
+      this.canvas.setHiddenAnnotation(null);
+      this.editor.open(session);
+      this.editor.focus();
+    });
   }
 
   cancelDraft(): void {
-    this.overlay.cancelDraft();
+    const activeSession = this.stateMachine.getSession();
+    this.clearAutosaveTimer();
+    this.pointerController.clear();
+    this.editor.close();
+    this.canvas.setHiddenAnnotation(null);
+
+    if (activeSession?.annotationId) {
+      this.syncStoredAnnotation(activeSession.annotationId);
+    }
+
+    this.stateMachine.clear();
   }
 
   async flushDraft(): Promise<void> {
-    await this.overlay.flushDraft();
+    await this.finalizeEditingSession({
+      reopenOnFailure: false
+    });
   }
 
-  private async saveAnnotation(input: {
-    annotationId?: string;
-    content: string;
-    pageKey: PageKey;
-    width: number;
-    x: number;
-    y: number;
-  }): Promise<WebAnnotationEntity> {
-    const existingAnnotation = input.annotationId ? this.annotations.get(input.annotationId) ?? null : null;
-    const nextAnnotation = existingAnnotation
-      ? {
-          ...existingAnnotation,
-          content: input.content.trim(),
-          width: Math.round(input.width),
-          x: Math.round(input.x),
-          y: Math.round(input.y),
-          updatedAt: new Date().toISOString()
-        }
-      : createWebAnnotationEntity({
-          content: input.content,
-          pageKey: input.pageKey,
-          width: input.width,
-          x: input.x,
-          y: input.y
-        });
+  private beginNextSession(start: () => void): void {
+    const activeSession = this.stateMachine.getSession();
 
-    let response: BasicResponse;
+    this.pointerController.clear();
+    this.clearAutosaveTimer();
 
-    try {
-      response = (await chrome.runtime.sendMessage({
-        type: "content/upsert-annotation",
-        payload: {
-          annotation: nextAnnotation
-        }
-      } satisfies RuntimeMessage)) as BasicResponse;
-    } catch (error) {
-      if (isExpectedRuntimeLifecycleError(error)) {
-        throw error;
-      }
-
-      throw error;
+    if (!activeSession) {
+      start();
+      return;
     }
 
-    if (!response.ok) {
-      throw new Error(response.reason ?? "Failed to save the web annotation.");
+    this.editor.close();
+    this.canvas.setHiddenAnnotation(null);
+
+    const trimmedDraftText = activeSession.draftText.trim();
+
+    if (!trimmedDraftText && activeSession.annotationId) {
+      void this.deleteStoredAnnotation(activeSession.annotationId);
+    } else if (trimmedDraftText) {
+      this.previewActiveSession(activeSession);
+      void this.dispatchCommit(activeSession, {
+        closeOnSuccess: false,
+        reopenOnFailure: false
+      });
+    } else if (activeSession.annotationId) {
+      this.syncStoredAnnotation(activeSession.annotationId);
     }
 
-    this.updatePreferredWidth(nextAnnotation.width);
-    this.annotations.set(nextAnnotation.id, nextAnnotation);
-    return nextAnnotation;
+    this.stateMachine.clear(activeSession.sessionId);
+    start();
+  }
+
+  private clearAutosaveTimer(): void {
+    if (this.autosaveTimer === null) {
+      return;
+    }
+
+    window.clearTimeout(this.autosaveTimer);
+    this.autosaveTimer = null;
   }
 
   private async deleteAnnotation(annotationId: string): Promise<void> {
-    const annotation = this.annotations.get(annotationId);
+    const annotation = this.store.get(annotationId);
 
     if (!annotation) {
       return;
     }
 
-    let response: BasicResponse;
+    this.closeSessionIfEditingAnnotation(annotationId);
+    this.store.remove(annotationId);
+    this.canvas.removeAnnotation(annotationId);
 
     try {
-      response = (await chrome.runtime.sendMessage({
-        type: "content/delete-annotation",
-        payload: {
-          annotationId,
-          pageKey: annotation.pageKey
-        }
-      } satisfies RuntimeMessage)) as BasicResponse;
+      await this.persistence.deleteAnnotation(annotation);
     } catch (error) {
       if (isExpectedRuntimeLifecycleError(error)) {
-        throw error;
+        return;
       }
 
-      throw error;
+      this.restoreAnnotation(annotation);
+      console.error("WebNote failed to delete the page annotation.", error);
+    }
+  }
+
+  private async deleteStoredAnnotation(annotationId: string): Promise<void> {
+    const annotation = this.store.get(annotationId);
+
+    if (!annotation) {
+      return;
     }
 
-    if (!response.ok) {
-      throw new Error(response.reason ?? "Failed to delete the web annotation.");
+    this.store.remove(annotationId);
+    this.canvas.removeAnnotation(annotationId);
+
+    try {
+      await this.persistence.deleteAnnotation(annotation);
+    } catch (error) {
+      if (isExpectedRuntimeLifecycleError(error)) {
+        return;
+      }
+
+      this.restoreAnnotation(annotation);
+      console.error("WebNote failed to delete the page annotation.", error);
+    }
+  }
+
+  private async dispatchCommit(session: AnnotationSession, options: CommitOptions): Promise<void> {
+    const requestKey = buildCommitKey(session);
+    const commitRequest = this.commitRequests.get(requestKey) ?? this.createCommitRequest(session);
+    const currentSession = this.stateMachine.getSession();
+
+    if (options.closeOnSuccess && currentSession?.sessionId === session.sessionId) {
+      this.stateMachine.setMode(session.sessionId, "committing");
     }
 
-    this.annotations.delete(annotationId);
+    try {
+      const result = await commitRequest;
+      this.handleCommitSuccess(session, result, options);
+    } catch (error) {
+      this.handleCommitFailure(session, error, options);
+    }
+  }
+
+  private createCommitRequest(session: AnnotationSession): Promise<AnnotationCommitResult> {
+    const requestKey = buildCommitKey(session);
+    const commitRequest = this.persistence
+      .commitSession(session, session.annotationId ? this.store.get(session.annotationId) : null)
+      .finally(() => {
+        this.commitRequests.delete(requestKey);
+      });
+
+    this.commitRequests.set(requestKey, commitRequest);
+    return commitRequest;
+  }
+
+  private async finalizeEditingSession(options: { reopenOnFailure: boolean }): Promise<void> {
+    const activeSession = this.stateMachine.getSession();
+
+    if (!activeSession || (activeSession.mode !== "editing" && activeSession.mode !== "resizing" && activeSession.mode !== "committing")) {
+      return;
+    }
+
+    this.clearAutosaveTimer();
+    await this.dispatchCommit(activeSession, {
+      closeOnSuccess: true,
+      reopenOnFailure: options.reopenOnFailure
+    });
+  }
+
+  private handleCanvasPointerDown(
+    annotationId: string,
+    target: "body" | "resize",
+    event: PointerEvent
+  ): void {
+    if (!this.interactive) {
+      return;
+    }
+
+    const annotation = this.store.get(annotationId);
+
+    if (!annotation) {
+      return;
+    }
+
+    const activeSession = this.stateMachine.getSession();
+
+    if (activeSession && activeSession.annotationId !== annotationId) {
+      this.beginNextSession(() => {
+        this.handleCanvasPointerDown(annotationId, target, event);
+      });
+      return;
+    }
+
+    this.clearAutosaveTimer();
+    this.pointerController.clear();
+
+    const nextSession =
+      target === "body"
+        ? this.stateMachine.startDragging({
+            annotationId,
+            content: annotation.content,
+            frame: toFrame(annotation),
+            pageKey: annotation.pageKey
+          })
+        : this.stateMachine.startResizing({
+            annotationId,
+            content: annotation.content,
+            frame: toFrame(annotation),
+            pageKey: annotation.pageKey
+          });
+
+    this.pointerController.begin({
+      event,
+      onFinish: ({ hasMoved, sessionId }) => {
+        const currentSession = this.stateMachine.getSession();
+
+        if (!currentSession || currentSession.sessionId !== sessionId) {
+          return;
+        }
+
+        if (!hasMoved) {
+          this.stateMachine.clear(sessionId);
+
+          if (target === "body") {
+            this.startEditingStoredAnnotation(annotationId);
+          } else {
+            this.syncStoredAnnotation(annotationId);
+          }
+
+          return;
+        }
+
+        void this.dispatchCommit(currentSession, {
+          closeOnSuccess: true,
+          reopenOnFailure: false
+        });
+      },
+      onPreview: (nextFrame) => {
+        this.stateMachine.updateFrame(nextSession.sessionId, nextFrame);
+        this.canvas.previewAnnotation(annotationId, nextFrame);
+      },
+      originFrame: toFrame(annotation),
+      sessionId: nextSession.sessionId,
+      target
+    });
+  }
+
+  private handleCommitFailure(
+    session: AnnotationSession,
+    error: unknown,
+    options: CommitOptions
+  ): void {
+    const currentSession = this.stateMachine.getSession();
+
+    if (session.annotationId) {
+      this.syncStoredAnnotation(session.annotationId);
+    }
+
+    if (isExpectedRuntimeLifecycleError(error)) {
+      return;
+    }
+
+    if (currentSession?.sessionId === session.sessionId) {
+      if (options.reopenOnFailure) {
+        this.stateMachine.setMode(session.sessionId, "editing");
+
+        if (currentSession.annotationId) {
+          this.canvas.setHiddenAnnotation(currentSession.annotationId);
+        }
+
+        this.editor.open(currentSession);
+        this.editor.focus();
+      } else if (options.closeOnSuccess) {
+        this.editor.close();
+        this.canvas.setHiddenAnnotation(null);
+        this.stateMachine.clear(session.sessionId);
+      } else {
+        this.stateMachine.setMode(session.sessionId, "editing");
+      }
+    }
+
+    console.error("WebNote failed to commit the page annotation.", error);
+  }
+
+  private handleCommitSuccess(
+    session: AnnotationSession,
+    result: AnnotationCommitResult,
+    options: CommitOptions
+  ): void {
+    this.applyCommitResult(result);
+
+    const currentSession = this.stateMachine.getSession();
+
+    if (!currentSession || currentSession.sessionId !== session.sessionId) {
+      return;
+    }
+
+    if (result.kind === "save") {
+      const boundSession = this.stateMachine.bindAnnotationId(session.sessionId, result.annotation.id);
+      const latestSession = boundSession ?? this.stateMachine.getSession();
+
+      if (latestSession && !options.closeOnSuccess) {
+        this.canvas.setHiddenAnnotation(result.annotation.id);
+      }
+    }
+
+    if (options.closeOnSuccess) {
+      this.editor.close();
+      this.canvas.setHiddenAnnotation(null);
+      this.stateMachine.clear(session.sessionId);
+      return;
+    }
+
+    this.stateMachine.setMode(session.sessionId, "editing");
+  }
+
+  private handleEditorInput(draftText: string): void {
+    const activeSession = this.stateMachine.getSession();
+
+    if (!activeSession || (activeSession.mode !== "editing" && activeSession.mode !== "committing")) {
+      return;
+    }
+
+    const updatedSession = this.stateMachine.updateDraftText(activeSession.sessionId, draftText);
+
+    if (!updatedSession) {
+      return;
+    }
+
+    this.scheduleAutosave();
+  }
+
+  private handleEditorResizePointerDown(event: PointerEvent): void {
+    const activeSession = this.stateMachine.getSession();
+
+    if (!activeSession || (activeSession.mode !== "editing" && activeSession.mode !== "committing")) {
+      return;
+    }
+
+    this.clearAutosaveTimer();
+    this.pointerController.clear();
+    this.stateMachine.setMode(activeSession.sessionId, "resizing");
+
+    this.pointerController.begin({
+      event,
+      onFinish: ({ hasMoved, sessionId }) => {
+        const currentSession = this.stateMachine.getSession();
+
+        if (!currentSession || currentSession.sessionId !== sessionId) {
+          return;
+        }
+
+        this.stateMachine.setMode(sessionId, "editing");
+        this.editor.focus();
+
+        if (!hasMoved) {
+          return;
+        }
+
+        void this.dispatchCommit(currentSession, {
+          closeOnSuccess: false,
+          reopenOnFailure: false
+        });
+      },
+      onPreview: (nextFrame) => {
+        this.stateMachine.updateFrame(activeSession.sessionId, nextFrame);
+        this.editor.updateFrame(nextFrame);
+      },
+      originFrame: cloneFrame(activeSession.frame),
+      sessionId: activeSession.sessionId,
+      target: "editor-resize"
+    });
   }
 
   private async loadPreferredWidth(): Promise<void> {
-    try {
-      const storageResult = await chrome.storage.local.get(ANNOTATION_WIDTH_PREFERENCE_STORAGE_KEY);
-      const candidateWidth = storageResult[ANNOTATION_WIDTH_PREFERENCE_STORAGE_KEY];
+    const candidateWidth = await this.persistence.loadPreferredWidth();
 
-      if (typeof candidateWidth !== "number") {
-        return;
-      }
-
+    if (candidateWidth !== null) {
       this.updatePreferredWidth(candidateWidth);
-    } catch (error) {
-      if (isExpectedRuntimeLifecycleError(error)) {
-        return;
-      }
-
-      console.warn("WebNote failed to load the preferred annotation width.", error);
     }
   }
 
+  private previewActiveSession(session: AnnotationSession): void {
+    if (!session.annotationId) {
+      return;
+    }
+
+    const storedAnnotation = this.store.get(session.annotationId);
+
+    if (!storedAnnotation) {
+      return;
+    }
+
+    this.canvas.syncAnnotation({
+      ...storedAnnotation,
+      content: session.draftText.trim(),
+      width: session.frame.width,
+      x: session.frame.x,
+      y: session.frame.y
+    });
+  }
+
+  private resetRuntimeState(): void {
+    this.clearAutosaveTimer();
+    this.pointerController.clear();
+    this.editor.close();
+    this.canvas.setHiddenAnnotation(null);
+    this.stateMachine.clear();
+  }
+
+  private restoreAnnotation(annotation: WebAnnotationEntity): void {
+    this.store.upsert(annotation);
+    this.canvas.syncAnnotation(annotation);
+  }
+
+  private scheduleAutosave(): void {
+    const activeSession = this.stateMachine.getSession();
+
+    if (!activeSession || activeSession.draftText.trim().length === 0) {
+      this.clearAutosaveTimer();
+      return;
+    }
+
+    this.clearAutosaveTimer();
+    this.autosaveTimer = window.setTimeout(() => {
+      this.autosaveTimer = null;
+      const currentSession = this.stateMachine.getSession();
+
+      if (!currentSession || currentSession.draftText.trim().length === 0) {
+        return;
+      }
+
+      void this.dispatchCommit(currentSession, {
+        closeOnSuccess: false,
+        reopenOnFailure: false
+      });
+    }, ANNOTATION_AUTOSAVE_DEBOUNCE_MS);
+  }
+
+  private startEditingStoredAnnotation(annotationId: string): void {
+    const annotation = this.store.get(annotationId);
+
+    if (!annotation) {
+      return;
+    }
+
+    this.beginNextSession(() => {
+      const nextSession = this.stateMachine.startEditing({
+        annotationId,
+        content: annotation.content,
+        frame: toFrame(annotation),
+        pageKey: annotation.pageKey
+      });
+      this.canvas.setHiddenAnnotation(annotationId);
+      this.editor.open(nextSession);
+      this.editor.focus();
+    });
+  }
+
+  private syncStoredAnnotation(annotationId: string): void {
+    const annotation = this.store.get(annotationId);
+
+    if (!annotation) {
+      this.canvas.removeAnnotation(annotationId);
+      return;
+    }
+
+    this.canvas.syncAnnotation(annotation);
+  }
+
   private updatePreferredWidth(width: number): void {
-    const nextPreferredWidth = clampPreferredWidth(width);
+    const nextPreferredWidth = Math.max(Math.round(width), ANNOTATION_MIN_WIDTH_PX);
 
     if (this.preferredWidth === nextPreferredWidth) {
-      this.overlay.setPreferredDraftWidth(nextPreferredWidth);
       return;
     }
 
     this.preferredWidth = nextPreferredWidth;
-    this.overlay.setPreferredDraftWidth(this.preferredWidth);
-    void chrome.storage.local
-      .set({
-        [ANNOTATION_WIDTH_PREFERENCE_STORAGE_KEY]: this.preferredWidth
-      })
-      .catch((error) => {
-        if (isExpectedRuntimeLifecycleError(error)) {
-          return;
-        }
+    this.persistence.persistPreferredWidth(this.preferredWidth);
+  }
 
-        console.warn("WebNote failed to persist the preferred annotation width.", error);
-      });
+  private closeSessionIfEditingAnnotation(annotationId: string): void {
+    const activeSession = this.stateMachine.getSession();
+
+    if (activeSession?.annotationId !== annotationId) {
+      return;
+    }
+
+    this.clearAutosaveTimer();
+    this.pointerController.clear();
+    this.editor.close();
+    this.canvas.setHiddenAnnotation(null);
+    this.stateMachine.clear(activeSession.sessionId);
+  }
+
+  private applyCommitResult(result: AnnotationCommitResult): void {
+    if (result.kind === "delete") {
+      this.store.remove(result.annotationId);
+      this.canvas.removeAnnotation(result.annotationId);
+      return;
+    }
+
+    if (result.kind !== "save") {
+      return;
+    }
+
+    this.store.upsert(result.annotation);
+    this.canvas.syncAnnotation(result.annotation);
+    this.updatePreferredWidth(result.annotation.width);
   }
 }
