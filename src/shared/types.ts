@@ -1,3 +1,5 @@
+import type { ColorToken } from "./colors";
+
 export type PageKey = string;
 export type AnchorResolutionSource = "live" | "position" | "quote";
 export type NoteKind = "excerpt" | "highlight";
@@ -27,6 +29,7 @@ export interface SerializedSelector {
 }
 
 export interface NoteEntity {
+  colorToken: ColorToken;
   id: string;
   kind: NoteKind;
   pageKey: PageKey;
@@ -47,6 +50,7 @@ export interface PendingInsert {
 }
 
 export interface WebAnnotationEntity {
+  colorToken: ColorToken;
   id: string;
   pageKey: PageKey;
   content: string;

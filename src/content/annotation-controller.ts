@@ -3,6 +3,11 @@ import {
   ANNOTATION_DEFAULT_WIDTH_PX,
   ANNOTATION_MIN_WIDTH_PX
 } from "../shared/constants";
+import {
+  DEFAULT_ANNOTATION_COLOR_TOKEN,
+  normalizeColorToken,
+  type ColorToken
+} from "../shared/colors";
 import type { PageKey, PageRecord, WebAnnotationEntity } from "../shared/types";
 import { AnnotationCanvas } from "./annotation-canvas";
 import { normalizeAnnotationFrame, type AnnotationFrame } from "./annotation-dom";
@@ -47,6 +52,7 @@ export class AnnotationController {
   private autosaveTimer: number | null = null;
   private currentPageKey: PageKey | null = null;
   private interactive = false;
+  private preferredColorToken = DEFAULT_ANNOTATION_COLOR_TOKEN;
   private preferredWidth = ANNOTATION_DEFAULT_WIDTH_PX;
 
   constructor() {
@@ -94,6 +100,32 @@ export class AnnotationController {
     }
   }
 
+  setColorToken(colorToken: ColorToken): void {
+    const normalizedColorToken = normalizeColorToken(
+      colorToken,
+      DEFAULT_ANNOTATION_COLOR_TOKEN
+    );
+    this.preferredColorToken = normalizedColorToken;
+
+    const activeSession = this.stateMachine.getSession();
+
+    if (!activeSession || activeSession.colorToken === normalizedColorToken) {
+      return;
+    }
+
+    const updatedSession = this.stateMachine.updateColorToken(
+      activeSession.sessionId,
+      normalizedColorToken
+    );
+
+    if (!updatedSession) {
+      return;
+    }
+
+    this.editor.setColorToken(updatedSession.colorToken);
+    this.previewActiveSession(updatedSession);
+  }
+
   setPageKey(pageKey: PageKey): void {
     if (this.currentPageKey === pageKey) {
       return;
@@ -126,6 +158,7 @@ export class AnnotationController {
 
     this.beginNextSession(() => {
       const session = this.stateMachine.openDraft({
+        colorToken: this.preferredColorToken,
         draftText: "",
         frame: normalizeAnnotationFrame({
           width: this.preferredWidth,
@@ -320,12 +353,14 @@ export class AnnotationController {
       target === "body"
         ? this.stateMachine.startDragging({
             annotationId,
+            colorToken: annotation.colorToken,
             content: annotation.content,
             frame: toFrame(annotation),
             pageKey: annotation.pageKey
           })
         : this.stateMachine.startResizing({
             annotationId,
+            colorToken: annotation.colorToken,
             content: annotation.content,
             frame: toFrame(annotation),
             pageKey: annotation.pageKey
@@ -515,6 +550,7 @@ export class AnnotationController {
 
     this.canvas.syncAnnotation({
       ...storedAnnotation,
+      colorToken: session.colorToken,
       content: session.draftText.trim(),
       width: session.frame.width,
       x: session.frame.x,
@@ -569,6 +605,7 @@ export class AnnotationController {
     this.beginNextSession(() => {
       const nextSession = this.stateMachine.startEditing({
         annotationId,
+        colorToken: annotation.colorToken,
         content: annotation.content,
         frame: toFrame(annotation),
         pageKey: annotation.pageKey

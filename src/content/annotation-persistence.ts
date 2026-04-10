@@ -52,6 +52,7 @@ export class AnnotationPersistence {
     const nextAnnotation = storedAnnotation
       ? {
           ...storedAnnotation,
+          colorToken: session.colorToken,
           content: trimmedDraftText,
           width: Math.round(session.frame.width),
           x: Math.round(session.frame.x),
@@ -59,6 +60,7 @@ export class AnnotationPersistence {
           updatedAt: new Date().toISOString()
         }
       : createWebAnnotationEntity({
+          colorToken: session.colorToken,
           content: trimmedDraftText,
           pageKey: session.pageKey,
           width: session.frame.width,

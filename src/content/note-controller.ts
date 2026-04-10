@@ -1,5 +1,10 @@
 import type { BasicResponse, RuntimeMessage } from "../shared/protocol";
 import {
+  DEFAULT_HIGHLIGHT_COLOR_TOKEN,
+  normalizeColorToken,
+  type ColorToken
+} from "../shared/colors";
+import {
   HIGHLIGHT_CAPTURE_DEBOUNCE_MS,
   HIGHLIGHT_CAPTURE_DEDUPE_WINDOW_MS
 } from "../shared/constants";
@@ -44,6 +49,7 @@ export class NoteController {
   private highlightCaptureTimer: number | null = null;
   private lastHighlightSelectionSignature: string | null = null;
   private lastHighlightSelectionTimestamp = 0;
+  private preferredHighlightColor = DEFAULT_HIGHLIGHT_COLOR_TOKEN;
 
   constructor(private readonly options: NoteControllerOptions) {
     this.anchorEngine = new AnchorEngine(options.pageRoot);
@@ -61,6 +67,13 @@ export class NoteController {
 
   clearBrowserSelection(): void {
     window.getSelection()?.removeAllRanges();
+  }
+
+  setPreferredHighlightColor(colorToken: ColorToken): void {
+    this.preferredHighlightColor = normalizeColorToken(
+      colorToken,
+      DEFAULT_HIGHLIGHT_COLOR_TOKEN
+    );
   }
 
   hydrate(pageRecord: PageRecord | null): void {
@@ -137,6 +150,7 @@ export class NoteController {
     }
 
     const noteEntity = createNoteEntity({
+      colorToken: this.preferredHighlightColor,
       kind: options.kind,
       page: this.options.getCurrentPage(),
       quoteText: capturedSelection.quoteText,
@@ -146,7 +160,7 @@ export class NoteController {
 
     this.noteEntities.set(noteEntity.id, noteEntity);
     this.liveAnchors.set(noteEntity.id, liveAnchor);
-    this.highlightController.upsert(liveAnchor);
+    this.highlightController.upsert(liveAnchor, noteEntity.colorToken);
 
     if (noteEntity.kind === "highlight") {
       this.highlightHitIndex.upsert(liveAnchor);
@@ -260,7 +274,7 @@ export class NoteController {
     }
 
     if (liveAnchor) {
-      this.highlightController.upsert(liveAnchor);
+      this.highlightController.upsert(liveAnchor, noteEntity.colorToken);
       this.highlightHitIndex.upsert(liveAnchor);
     }
 
@@ -293,13 +307,13 @@ export class NoteController {
     }
 
     this.liveAnchors.set(noteId, liveAnchor);
-    this.highlightController.upsert(liveAnchor);
+    this.highlightController.upsert(liveAnchor, noteEntity.colorToken);
 
     if (noteEntity.kind === "highlight") {
       this.highlightHitIndex.upsert(liveAnchor);
     }
 
-    this.highlightController.flash(liveAnchor);
+    this.highlightController.flash(liveAnchor, noteEntity.colorToken);
     scrollRangeIntoView(liveAnchor.range);
     return { ok: true };
   }
@@ -316,8 +330,27 @@ export class NoteController {
     return highlightAnchors;
   }
 
+  private getRenderableAnchors(): Array<{ anchor: LiveAnchor; colorToken: ColorToken }> {
+    const renderableAnchors: Array<{ anchor: LiveAnchor; colorToken: ColorToken }> = [];
+
+    for (const [noteId, liveAnchor] of this.liveAnchors.entries()) {
+      const noteEntity = this.noteEntities.get(noteId);
+
+      if (!noteEntity) {
+        continue;
+      }
+
+      renderableAnchors.push({
+        anchor: liveAnchor,
+        colorToken: noteEntity.colorToken
+      });
+    }
+
+    return renderableAnchors;
+  }
+
   private refreshPresentation(): void {
-    this.highlightController.replaceAll(this.liveAnchors.values());
+    this.highlightController.replaceAll(this.getRenderableAnchors());
     this.highlightHitIndex.replaceAll(this.getHighlightAnchors());
   }
 }

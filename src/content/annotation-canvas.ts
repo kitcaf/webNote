@@ -8,6 +8,7 @@ import {
   ANNOTATION_CARD_HIDDEN_CLASS,
   ANNOTATION_CARD_PREVIEW_CLASS,
   ANNOTATION_RESIZE_HANDLE_CLASS,
+  applyAnnotationColor,
   applyAnnotationFrame,
   createResizeHandleElement,
   injectAnnotationStyles,
@@ -120,6 +121,7 @@ export class AnnotationCanvas {
     const cardView = this.cardViews.get(annotation.id) ?? this.createCardView(annotation.id);
     cardView.contentElement.textContent = annotation.content;
     cardView.rootElement.classList.remove(ANNOTATION_CARD_PREVIEW_CLASS);
+    applyAnnotationColor(cardView.rootElement, annotation.colorToken);
     applyAnnotationFrame(cardView.rootElement, annotation);
     cardView.rootElement.classList.toggle(ANNOTATION_CARD_HIDDEN_CLASS, this.hiddenAnnotationId === annotation.id);
   }

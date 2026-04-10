@@ -1,6 +1,7 @@
 import {
   ANNOTATION_EDITOR_CLASS,
   ANNOTATION_EDITOR_OPEN_CLASS,
+  applyAnnotationColor,
   applyAnnotationFrame,
   autosizeAnnotationEditor,
   createEditorInputElement,
@@ -9,6 +10,7 @@ import {
   removeElementSafely,
   type AnnotationFrame
 } from "./annotation-dom";
+import type { ColorToken } from "../shared/colors";
 import type { AnnotationSession } from "./annotation-state-machine";
 
 interface AnnotationEditorHandlers {
@@ -110,9 +112,14 @@ export class AnnotationEditor {
   open(session: AnnotationSession): void {
     this.isOpen = true;
     this.rootElement.classList.add(ANNOTATION_EDITOR_OPEN_CLASS);
+    this.setColorToken(session.colorToken);
     this.setValue(session.draftText);
     this.updateFrame(session.frame);
     autosizeAnnotationEditor(this.editorElement);
+  }
+
+  setColorToken(colorToken: ColorToken): void {
+    applyAnnotationColor(this.rootElement, colorToken);
   }
 
   setValue(draftText: string): void {

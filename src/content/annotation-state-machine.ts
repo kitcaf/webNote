@@ -1,3 +1,4 @@
+import type { ColorToken } from "../shared/colors";
 import type { PageKey } from "../shared/types";
 import type { AnnotationFrame } from "./annotation-dom";
 
@@ -5,6 +6,7 @@ export type AnnotationInteractionMode = "idle" | "editing" | "dragging" | "resiz
 
 export interface AnnotationSession {
   annotationId: string | null;
+  colorToken: ColorToken;
   draftRevision: number;
   draftText: string;
   frame: AnnotationFrame;
@@ -40,12 +42,14 @@ export class AnnotationStateMachine {
   }
 
   openDraft(input: {
+    colorToken: ColorToken;
     draftText: string;
     frame: AnnotationFrame;
     pageKey: PageKey;
   }): AnnotationSession {
     return this.replaceSession({
       annotationId: null,
+      colorToken: input.colorToken,
       draftText: input.draftText,
       frame: input.frame,
       mode: "editing",
@@ -55,12 +59,14 @@ export class AnnotationStateMachine {
 
   startDragging(input: {
     annotationId: string;
+    colorToken: ColorToken;
     content: string;
     frame: AnnotationFrame;
     pageKey: PageKey;
   }): AnnotationSession {
     return this.replaceSession({
       annotationId: input.annotationId,
+      colorToken: input.colorToken,
       draftText: input.content,
       frame: input.frame,
       mode: "dragging",
@@ -70,12 +76,14 @@ export class AnnotationStateMachine {
 
   startEditing(input: {
     annotationId: string;
+    colorToken: ColorToken;
     content: string;
     frame: AnnotationFrame;
     pageKey: PageKey;
   }): AnnotationSession {
     return this.replaceSession({
       annotationId: input.annotationId,
+      colorToken: input.colorToken,
       draftText: input.content,
       frame: input.frame,
       mode: "editing",
@@ -85,12 +93,14 @@ export class AnnotationStateMachine {
 
   startResizing(input: {
     annotationId: string;
+    colorToken: ColorToken;
     content: string;
     frame: AnnotationFrame;
     pageKey: PageKey;
   }): AnnotationSession {
     return this.replaceSession({
       annotationId: input.annotationId,
+      colorToken: input.colorToken,
       draftText: input.content,
       frame: input.frame,
       mode: "resizing",
@@ -152,6 +162,23 @@ export class AnnotationStateMachine {
     return cloneSession(this.activeSession);
   }
 
+  updateColorToken(sessionId: number, colorToken: ColorToken): AnnotationSession | null {
+    if (!this.activeSession || this.activeSession.sessionId !== sessionId) {
+      return null;
+    }
+
+    if (this.activeSession.colorToken === colorToken) {
+      return cloneSession(this.activeSession);
+    }
+
+    this.activeSession = {
+      ...this.activeSession,
+      colorToken,
+      draftRevision: this.activeSession.draftRevision + 1
+    };
+    return cloneSession(this.activeSession);
+  }
+
   bindAnnotationId(sessionId: number, annotationId: string): AnnotationSession | null {
     if (!this.activeSession || this.activeSession.sessionId !== sessionId) {
       return null;
@@ -170,6 +197,7 @@ export class AnnotationStateMachine {
 
   private replaceSession(input: {
     annotationId: string | null;
+    colorToken: ColorToken;
     draftText: string;
     frame: AnnotationFrame;
     mode: Exclude<AnnotationInteractionMode, "idle">;
@@ -177,6 +205,7 @@ export class AnnotationStateMachine {
   }): AnnotationSession {
     this.activeSession = {
       annotationId: input.annotationId,
+      colorToken: input.colorToken,
       draftRevision: 0,
       draftText: input.draftText,
       frame: { ...input.frame },

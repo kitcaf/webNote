@@ -1,7 +1,19 @@
-export type PageToolMode = "highlight" | "annotation" | null;
+import {
+  COLOR_TOKENS,
+  getColorPaletteEntry,
+  type ColorToken
+} from "../shared/colors";
+import {
+  clonePageToolState,
+  createDefaultPageToolState,
+  getColorForMode,
+  type PageToolMode,
+  type PageToolState
+} from "./page-tools";
 
 interface PageToolbarHandlers {
-  onModeChange: (mode: PageToolMode) => void;
+  onColorSelect: (mode: Exclude<PageToolMode, null>, colorToken: ColorToken) => void;
+  onModeSelect: (mode: Exclude<PageToolMode, null>) => void;
 }
 
 const TOOLBAR_STYLE_ID = "webnote-page-toolbar-style";
@@ -57,7 +69,7 @@ const injectToolbarStyles = (): void => {
       right: -8px;
       z-index: 2147483646;
       display: grid;
-      gap: 6px;
+      gap: 8px;
       padding: 8px 12px 8px 6px;
       border: 1px solid rgba(15, 23, 42, 0.08);
       border-right: 0;
@@ -67,6 +79,11 @@ const injectToolbarStyles = (): void => {
       transform: translateY(-50%);
       backdrop-filter: blur(12px);
       transition: right 160ms ease, box-shadow 160ms ease;
+    }
+
+    .webnote-page-toolbar__modes {
+      display: grid;
+      gap: 6px;
     }
 
     .webnote-page-toolbar:hover {
@@ -94,7 +111,8 @@ const injectToolbarStyles = (): void => {
       transform: translateY(-1px);
     }
 
-    .webnote-page-toolbar__button:focus-visible {
+    .webnote-page-toolbar__button:focus-visible,
+    .webnote-page-toolbar__swatch:focus-visible {
       outline: 2px solid rgba(37, 99, 235, 0.28);
       outline-offset: 2px;
     }
@@ -102,6 +120,43 @@ const injectToolbarStyles = (): void => {
     .webnote-page-toolbar__button[aria-pressed="true"] {
       background: #2563eb;
       color: #ffffff;
+    }
+
+    .webnote-page-toolbar__colors {
+      display: none;
+      grid-auto-flow: column;
+      gap: 6px;
+      padding-top: 6px;
+      border-top: 1px solid rgba(15, 23, 42, 0.08);
+    }
+
+    .webnote-page-toolbar__colors--visible {
+      display: grid;
+    }
+
+    .webnote-page-toolbar__swatch {
+      --webnote-toolbar-swatch-color: #ffffff;
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      border: 0;
+      border-radius: 999px;
+      background: var(--webnote-toolbar-swatch-color);
+      box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.12);
+      cursor: pointer;
+      transition: transform 140ms ease, box-shadow 140ms ease;
+    }
+
+    .webnote-page-toolbar__swatch:hover {
+      transform: translateY(-1px) scale(1.05);
+    }
+
+    .webnote-page-toolbar__swatch[aria-pressed="true"] {
+      box-shadow:
+        inset 0 0 0 1px rgba(15, 23, 42, 0.12),
+        0 0 0 2px #ffffff,
+        0 0 0 4px var(--webnote-toolbar-swatch-color);
+      transform: scale(1.05);
     }
   `;
 
@@ -119,11 +174,15 @@ const ANNOTATION_ICON_PATHS = [
   "M6 15.25h7.5",
   "m15.5 15.25 1.75 1.75L21 13.25"
 ];
+
 export class PageToolbar {
+  private readonly colorBar: HTMLDivElement;
+  private readonly colorButtons = new Map<ColorToken, HTMLButtonElement>();
   private readonly root: HTMLDivElement;
   private readonly highlightButton: HTMLButtonElement;
   private readonly annotationButton: HTMLButtonElement;
-  private activeMode: PageToolMode = null;
+  private readonly modeContainer: HTMLDivElement;
+  private state = createDefaultPageToolState();
 
   constructor(private readonly handlers: PageToolbarHandlers) {
     injectToolbarStyles();
@@ -131,6 +190,8 @@ export class PageToolbar {
     this.root = document.createElement("div");
     this.root.className = "webnote-page-toolbar";
     this.root.dataset.webnoteOverlay = "true";
+    this.modeContainer = document.createElement("div");
+    this.modeContainer.className = "webnote-page-toolbar__modes";
 
     this.highlightButton = this.createModeButton(
       "Highlight mode",
@@ -142,8 +203,18 @@ export class PageToolbar {
       ANNOTATION_ICON_PATHS,
       "annotation"
     );
+    this.colorBar = document.createElement("div");
+    this.colorBar.className = "webnote-page-toolbar__colors";
+    this.colorBar.dataset.webnoteOverlay = "true";
 
-    this.root.append(this.highlightButton, this.annotationButton);
+    for (const colorToken of COLOR_TOKENS) {
+      const colorButton = this.createColorButton(colorToken);
+      this.colorButtons.set(colorToken, colorButton);
+      this.colorBar.append(colorButton);
+    }
+
+    this.modeContainer.append(this.highlightButton, this.annotationButton);
+    this.root.append(this.modeContainer, this.colorBar);
     document.body.append(this.root);
   }
 
@@ -151,16 +222,17 @@ export class PageToolbar {
     return target instanceof Node && this.root.contains(target);
   }
 
-  setMode(mode: PageToolMode): void {
-    this.activeMode = mode;
-    this.highlightButton.setAttribute("aria-pressed", String(mode === "highlight"));
-    this.annotationButton.setAttribute("aria-pressed", String(mode === "annotation"));
-  }
+  setState(state: PageToolState): void {
+    this.state = clonePageToolState(state);
+    const activeMode = this.state.mode;
+    const activeColor = activeMode ? getColorForMode(this.state, activeMode) : null;
+    this.highlightButton.setAttribute("aria-pressed", String(activeMode === "highlight"));
+    this.annotationButton.setAttribute("aria-pressed", String(activeMode === "annotation"));
+    this.colorBar.classList.toggle("webnote-page-toolbar__colors--visible", activeMode !== null);
 
-  private toggleMode(mode: Exclude<PageToolMode, null>): void {
-    const nextMode = this.activeMode === mode ? null : mode;
-    this.setMode(nextMode);
-    this.handlers.onModeChange(nextMode);
+    for (const [colorToken, colorButton] of this.colorButtons.entries()) {
+      colorButton.setAttribute("aria-pressed", String(activeColor === colorToken));
+    }
   }
 
   private createActionButton(
@@ -192,10 +264,34 @@ export class PageToolbar {
     mode: Exclude<PageToolMode, null>
   ): HTMLButtonElement {
     const buttonElement = this.createActionButton(title, iconPaths, async () => {
-      this.toggleMode(mode);
+      this.handlers.onModeSelect(mode);
     });
 
     buttonElement.setAttribute("aria-pressed", "false");
+    return buttonElement;
+  }
+
+  private createColorButton(colorToken: ColorToken): HTMLButtonElement {
+    const paletteEntry = getColorPaletteEntry(colorToken);
+    const buttonElement = document.createElement("button");
+    buttonElement.className = "webnote-page-toolbar__swatch";
+    buttonElement.dataset.webnoteOverlay = "true";
+    buttonElement.style.setProperty("--webnote-toolbar-swatch-color", paletteEntry.swatch);
+    buttonElement.title = paletteEntry.label;
+    buttonElement.type = "button";
+    buttonElement.setAttribute("aria-label", `${paletteEntry.label} color`);
+    buttonElement.setAttribute("aria-pressed", "false");
+    buttonElement.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    buttonElement.addEventListener("click", () => {
+      if (!this.state.mode) {
+        return;
+      }
+
+      this.handlers.onColorSelect(this.state.mode, colorToken);
+    });
     return buttonElement;
   }
 }

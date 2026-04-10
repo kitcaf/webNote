@@ -1,9 +1,14 @@
 import type { BasicResponse, RuntimeMessage } from "../shared/protocol";
 import { AnnotationController } from "./annotation-controller";
-import { ModeController } from "./mode-controller";
 import { NoteController } from "./note-controller";
 import { PageLifecycleCoordinator } from "./page-lifecycle";
+import { PageToolController } from "./page-tool-controller";
+import {
+  loadPageToolColorPreferences,
+  persistPageToolColorPreference
+} from "./page-tool-preferences";
 import { PageToolbar } from "./page-toolbar";
+import type { PageToolState } from "./page-tools";
 import { watchUrlChanges } from "./url-watch";
 
 const pageRoot = document.body;
@@ -12,34 +17,51 @@ if (!pageRoot) {
   throw new Error("WebNote requires document.body to be available.");
 }
 
-let modeController: ModeController;
 let pageLifecycleCoordinator: PageLifecycleCoordinator;
+let pageToolController: PageToolController;
 
 const annotationController = new AnnotationController();
-const pageToolbar = new PageToolbar({
-  onModeChange: (mode) => {
-    modeController.setMode(mode);
-  }
-});
 const noteController = new NoteController({
   getCurrentPage: () => pageLifecycleCoordinator.getCurrentPage(),
   pageRoot
+});
+const pageToolbar = new PageToolbar({
+  onColorSelect: (mode, colorToken) => {
+    pageToolController.setColor(mode, colorToken);
+    persistPageToolColorPreference(mode, colorToken);
+  },
+  onModeSelect: (mode) => {
+    pageToolController.toggleMode(mode);
+  }
 });
 
 const isOverlayTarget = (target: EventTarget | null): boolean =>
   annotationController.isOwnedTarget(target) || pageToolbar.isOwnedTarget(target);
 
-modeController = new ModeController({
-  onModeChange: (mode) => {
-    pageToolbar.setMode(mode);
-    annotationController.setInteractive(mode === "annotation");
+const applyToolState = (toolState: PageToolState): void => {
+  pageToolbar.setState(toolState);
+  noteController.setPreferredHighlightColor(toolState.highlightColor);
+  annotationController.setColorToken(toolState.annotationColor);
 
-    if (mode !== "annotation") {
-      annotationController.cancelDraft();
-    }
+  annotationController.setInteractive(toolState.mode === "annotation");
 
-    noteController.clearBrowserSelection();
+  if (toolState.mode !== "annotation") {
+    annotationController.cancelDraft();
   }
+
+  noteController.clearBrowserSelection();
+};
+
+pageToolController = new PageToolController({
+  onStateChange: (toolState) => {
+    applyToolState(toolState);
+  }
+});
+
+applyToolState(pageToolController.getState());
+
+void loadPageToolColorPreferences().then((preferences) => {
+  pageToolController.hydrateColors(preferences);
 });
 
 pageLifecycleCoordinator = new PageLifecycleCoordinator({
@@ -84,7 +106,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
 document.addEventListener(
   "mouseup",
   (event) => {
-    if (modeController.getMode() !== "highlight" || isOverlayTarget(event.target)) {
+    if (pageToolController.getMode() !== "highlight" || isOverlayTarget(event.target)) {
       return;
     }
 
@@ -96,7 +118,11 @@ document.addEventListener(
 document.addEventListener(
   "pointerdown",
   (event) => {
-    if (modeController.getMode() !== "annotation" || isOverlayTarget(event.target) || event.button !== 0) {
+    if (
+      pageToolController.getMode() !== "annotation" ||
+      isOverlayTarget(event.target) ||
+      event.button !== 0
+    ) {
       return;
     }
 
@@ -113,7 +139,7 @@ document.addEventListener(
       return;
     }
 
-    if (modeController.getMode() === "highlight" && !isOverlayTarget(event.target)) {
+    if (pageToolController.getMode() === "highlight" && !isOverlayTarget(event.target)) {
       const highlightNote = noteController.findHighlightNoteAtPoint(event.clientX, event.clientY);
 
       if (highlightNote) {
@@ -126,7 +152,7 @@ document.addEventListener(
       }
     }
 
-    if (modeController.getMode() !== "annotation" || isOverlayTarget(event.target)) {
+    if (pageToolController.getMode() !== "annotation" || isOverlayTarget(event.target)) {
       return;
     }
 
@@ -143,11 +169,11 @@ document.addEventListener("keydown", (event) => {
   }
 
   annotationController.cancelDraft();
-  modeController.clear();
+  pageToolController.clear();
 });
 
 watchUrlChanges(() => {
-  modeController.clear();
+  pageToolController.clear();
   void pageLifecycleCoordinator.sync("content/page-changed");
 });
 

@@ -5,6 +5,12 @@ import {
   NOTE_LINK_SCHEME,
   NOTE_META_SEPARATOR
 } from "./constants";
+import {
+  DEFAULT_ANNOTATION_COLOR_TOKEN,
+  DEFAULT_HIGHLIGHT_COLOR_TOKEN,
+  normalizeColorToken,
+  type ColorToken
+} from "./colors";
 import type {
   NoteKind,
   NoteEntity,
@@ -70,6 +76,7 @@ export const buildMarkdownSnippet = (input: {
 };
 
 export const createNoteEntity = (input: {
+  colorToken: ColorToken;
   kind: NoteKind;
   page: PageDescriptor;
   quoteText: string;
@@ -79,6 +86,7 @@ export const createNoteEntity = (input: {
   const id = crypto.randomUUID();
 
   return {
+    colorToken: normalizeColorToken(input.colorToken, DEFAULT_HIGHLIGHT_COLOR_TOKEN),
     id,
     kind: input.kind,
     pageKey: input.page.key,
@@ -98,6 +106,7 @@ export const createNoteEntity = (input: {
 };
 
 export const createWebAnnotationEntity = (input: {
+  colorToken: ColorToken;
   pageKey: PageKey;
   content: string;
   width?: number;
@@ -107,6 +116,7 @@ export const createWebAnnotationEntity = (input: {
   const createdAt = buildTimestamp();
 
   return {
+    colorToken: normalizeColorToken(input.colorToken, DEFAULT_ANNOTATION_COLOR_TOKEN),
     id: crypto.randomUUID(),
     pageKey: input.pageKey,
     content: input.content.trim(),

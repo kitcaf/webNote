@@ -8,6 +8,11 @@ import {
   PAGE_META_STORAGE_PREFIX
 } from "../shared/constants";
 import {
+  DEFAULT_ANNOTATION_COLOR_TOKEN,
+  DEFAULT_HIGHLIGHT_COLOR_TOKEN,
+  normalizeColorToken
+} from "../shared/colors";
+import {
   buildLegacyPageKey,
   createPageDocument,
   getLegacySeededMarkdown
@@ -78,12 +83,14 @@ const clonePendingInserts = (pendingInserts: Iterable<PendingInsert>): PendingIn
 
 const cloneAnnotation = (annotation: WebAnnotationEntity, pageKey: PageKey): WebAnnotationEntity => ({
   ...annotation,
+  colorToken: normalizeColorToken(annotation.colorToken, DEFAULT_ANNOTATION_COLOR_TOKEN),
   pageKey,
   width: Math.max(Math.round(annotation.width), ANNOTATION_MIN_WIDTH_PX)
 });
 
 const cloneNote = (note: NoteEntity, page: PageDescriptor): NoteEntity => ({
   ...note,
+  colorToken: normalizeColorToken(note.colorToken, DEFAULT_HIGHLIGHT_COLOR_TOKEN),
   kind: (note.kind ?? "excerpt") as NoteKind,
   pageKey: page.key,
   pageTitle: page.title,

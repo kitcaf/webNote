@@ -3,6 +3,12 @@ import {
   ANNOTATION_PLACEHOLDER,
   ANNOTATION_RESIZE_HANDLE_SIZE_PX
 } from "../shared/constants";
+import {
+  DEFAULT_ANNOTATION_COLOR_TOKEN,
+  getColorPaletteEntry,
+  normalizeColorToken,
+  type ColorToken
+} from "../shared/colors";
 
 export interface AnnotationFrame {
   width: number;
@@ -14,6 +20,7 @@ const STYLE_ID = "webnote-annotation-overlay-style";
 const MIN_EDITOR_HEIGHT_PX = 26;
 const EDGE_PADDING_PX = 10;
 const TOP_PADDING_PX = 8;
+const DEFAULT_ANNOTATION_COLORS = getColorPaletteEntry(DEFAULT_ANNOTATION_COLOR_TOKEN).annotation;
 
 export const ANNOTATION_CURSOR_CLASS = "webnote-annotation-layer--interacting";
 export const ANNOTATION_CANVAS_CLASS = "webnote-annotation-canvas";
@@ -58,9 +65,11 @@ export const injectAnnotationStyles = (): void => {
 
     .${ANNOTATION_CARD_CLASS},
     .${ANNOTATION_EDITOR_CLASS} {
+      --webnote-annotation-accent-color: ${DEFAULT_ANNOTATION_COLORS.accent};
+      --webnote-annotation-text-color: ${DEFAULT_ANNOTATION_COLORS.text};
       position: absolute;
       min-width: ${ANNOTATION_MIN_WIDTH_PX}px;
-      color: rgba(17, 24, 39, 0.94);
+      color: var(--webnote-annotation-text-color);
       font: 600 16px/1.55 "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
       letter-spacing: 0.01em;
       white-space: pre-wrap;
@@ -92,7 +101,7 @@ export const injectAnnotationStyles = (): void => {
     }
 
     .${ANNOTATION_CANVAS_INTERACTIVE_CLASS} .${ANNOTATION_CARD_CLASS}:hover {
-      outline: 1px dashed rgba(37, 99, 235, 0.32);
+      outline: 1px dashed var(--webnote-annotation-accent-color);
       outline-offset: 4px;
       transform: translateY(-1px);
     }
@@ -151,7 +160,7 @@ export const injectAnnotationStyles = (): void => {
       padding: 0;
       border: 0;
       border-radius: 999px;
-      background: rgba(37, 99, 235, 0.9);
+      background: var(--webnote-annotation-accent-color);
       box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
       cursor: ew-resize;
       pointer-events: auto;
@@ -177,7 +186,7 @@ export const injectAnnotationStyles = (): void => {
       display: none;
       z-index: 2147483646;
       pointer-events: auto;
-      outline: 1px dashed rgba(37, 99, 235, 0.3);
+      outline: 1px dashed var(--webnote-annotation-accent-color);
       outline-offset: 4px;
       border-radius: 12px;
       background: transparent;
@@ -197,8 +206,8 @@ export const injectAnnotationStyles = (): void => {
       resize: none;
       overflow: hidden;
       background: transparent;
-      color: rgba(17, 24, 39, 0.94);
-      caret-color: #2563eb;
+      color: inherit;
+      caret-color: var(--webnote-annotation-accent-color);
       font: inherit;
       line-height: inherit;
       letter-spacing: inherit;
@@ -234,6 +243,20 @@ export const createEditorInputElement = (): HTMLTextAreaElement => {
 export const autosizeAnnotationEditor = (editorElement: HTMLTextAreaElement): void => {
   editorElement.style.height = "0px";
   editorElement.style.height = `${Math.max(MIN_EDITOR_HEIGHT_PX, editorElement.scrollHeight)}px`;
+};
+
+export const applyAnnotationColor = (
+  element: HTMLElement,
+  colorToken: ColorToken
+): ColorToken => {
+  const normalizedColorToken = normalizeColorToken(
+    colorToken,
+    DEFAULT_ANNOTATION_COLOR_TOKEN
+  );
+  const paletteEntry = getColorPaletteEntry(normalizedColorToken);
+  element.style.setProperty("--webnote-annotation-accent-color", paletteEntry.annotation.accent);
+  element.style.setProperty("--webnote-annotation-text-color", paletteEntry.annotation.text);
+  return normalizedColorToken;
 };
 
 export const normalizeAnnotationFrame = (frame: AnnotationFrame): AnnotationFrame => {

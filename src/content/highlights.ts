@@ -1,10 +1,21 @@
 import {
   ACTIVE_HIGHLIGHT_DURATION_MS,
-  ACTIVE_HIGHLIGHT_NAME,
+  APP_NAMESPACE,
   HIGHLIGHT_STYLE_ID,
-  PRIMARY_HIGHLIGHT_NAME
 } from "../shared/constants";
+import { COLOR_TOKENS, getColorPaletteEntry, type ColorToken } from "../shared/colors";
 import type { LiveAnchor } from "../shared/types";
+
+interface HighlightEntry {
+  anchor: LiveAnchor;
+  colorToken: ColorToken;
+}
+
+const getPersistentHighlightName = (colorToken: ColorToken): string =>
+  `${APP_NAMESPACE}-notes-${colorToken}`;
+
+const getActiveHighlightName = (colorToken: ColorToken): string =>
+  `${APP_NAMESPACE}-active-${colorToken}`;
 
 const injectHighlightStyles = (): void => {
   if (document.getElementById(HIGHLIGHT_STYLE_ID)) {
@@ -13,25 +24,29 @@ const injectHighlightStyles = (): void => {
 
   const styleElement = document.createElement("style");
   styleElement.id = HIGHLIGHT_STYLE_ID;
-  styleElement.textContent = `
-    ::highlight(${PRIMARY_HIGHLIGHT_NAME}) {
-      background: rgba(255, 208, 78, 0.36);
-      color: inherit;
-    }
+  styleElement.textContent = COLOR_TOKENS.map((colorToken) => {
+    const paletteEntry = getColorPaletteEntry(colorToken);
 
-    ::highlight(${ACTIVE_HIGHLIGHT_NAME}) {
-      background: rgba(99, 102, 241, 0.32);
-      color: inherit;
-    }
-  `;
+    return `
+      ::highlight(${getPersistentHighlightName(colorToken)}) {
+        background: ${paletteEntry.highlight.fill};
+        color: inherit;
+      }
+
+      ::highlight(${getActiveHighlightName(colorToken)}) {
+        background: ${paletteEntry.highlight.activeFill};
+        color: inherit;
+      }
+    `;
+  }).join("\n");
 
   document.head.append(styleElement);
 };
 
 export class HighlightController {
-  private readonly noteAnchors = new Map<string, LiveAnchor>();
+  private readonly noteAnchors = new Map<string, HighlightEntry>();
   private readonly persistentRanges = new Map<string, Range>();
-  private readonly persistentHighlight: Highlight | null;
+  private readonly persistentHighlights = new Map<ColorToken, Highlight>();
   private activeHighlightTimer: number | null = null;
   readonly isSupported =
     typeof Highlight !== "undefined" &&
@@ -42,11 +57,13 @@ export class HighlightController {
   constructor() {
     if (this.isSupported) {
       injectHighlightStyles();
-      this.persistentHighlight = new Highlight();
-      this.persistentHighlight.priority = 1;
-      CSS.highlights.set(PRIMARY_HIGHLIGHT_NAME, this.persistentHighlight);
-    } else {
-      this.persistentHighlight = null;
+
+      for (const colorToken of COLOR_TOKENS) {
+        const persistentHighlight = new Highlight();
+        persistentHighlight.priority = 1;
+        this.persistentHighlights.set(colorToken, persistentHighlight);
+        CSS.highlights.set(getPersistentHighlightName(colorToken), persistentHighlight);
+      }
     }
   }
 
@@ -54,22 +71,32 @@ export class HighlightController {
     this.noteAnchors.clear();
     this.persistentRanges.clear();
 
+    if (this.activeHighlightTimer !== null) {
+      window.clearTimeout(this.activeHighlightTimer);
+      this.activeHighlightTimer = null;
+    }
+
     if (!this.isSupported) {
       return;
     }
 
-    this.persistentHighlight?.clear();
-    if (this.persistentHighlight) {
-      CSS.highlights.set(PRIMARY_HIGHLIGHT_NAME, this.persistentHighlight);
+    for (const colorToken of COLOR_TOKENS) {
+      const persistentHighlight = this.persistentHighlights.get(colorToken);
+      persistentHighlight?.clear();
+
+      if (persistentHighlight) {
+        CSS.highlights.set(getPersistentHighlightName(colorToken), persistentHighlight);
+      }
+
+      CSS.highlights.delete(getActiveHighlightName(colorToken));
     }
-    CSS.highlights.delete(ACTIVE_HIGHLIGHT_NAME);
   }
 
-  replaceAll(anchors: Iterable<LiveAnchor>): void {
-    const nextAnchors = new Map<string, LiveAnchor>();
+  replaceAll(entries: Iterable<HighlightEntry>): void {
+    const nextAnchors = new Map<string, HighlightEntry>();
 
-    for (const anchor of anchors) {
-      nextAnchors.set(anchor.noteId, anchor);
+    for (const entry of entries) {
+      nextAnchors.set(entry.anchor.noteId, entry);
     }
 
     for (const noteId of this.noteAnchors.keys()) {
@@ -78,13 +105,17 @@ export class HighlightController {
       }
     }
 
-    for (const anchor of nextAnchors.values()) {
-      this.upsert(anchor);
+    for (const entry of nextAnchors.values()) {
+      this.upsert(entry.anchor, entry.colorToken);
     }
   }
 
-  upsert(anchor: LiveAnchor): void {
-    this.noteAnchors.set(anchor.noteId, anchor);
+  upsert(anchor: LiveAnchor, colorToken: ColorToken): void {
+    const previousEntry = this.noteAnchors.get(anchor.noteId);
+    this.noteAnchors.set(anchor.noteId, {
+      anchor,
+      colorToken
+    });
 
     if (!this.isSupported) {
       return;
@@ -93,15 +124,17 @@ export class HighlightController {
     const previousRange = this.persistentRanges.get(anchor.noteId);
 
     if (previousRange) {
-      this.persistentHighlight?.delete(previousRange);
+      const previousColorToken = previousEntry?.colorToken ?? colorToken;
+      this.persistentHighlights.get(previousColorToken)?.delete(previousRange);
     }
 
     const nextRange = anchor.range.cloneRange();
     this.persistentRanges.set(anchor.noteId, nextRange);
-    this.persistentHighlight?.add(nextRange);
+    this.persistentHighlights.get(colorToken)?.add(nextRange);
   }
 
   remove(noteId: string): void {
+    const previousEntry = this.noteAnchors.get(noteId);
     this.noteAnchors.delete(noteId);
 
     if (!this.isSupported) {
@@ -115,10 +148,12 @@ export class HighlightController {
     }
 
     this.persistentRanges.delete(noteId);
-    this.persistentHighlight?.delete(previousRange);
+    if (previousEntry) {
+      this.persistentHighlights.get(previousEntry.colorToken)?.delete(previousRange);
+    }
   }
 
-  flash(anchor: LiveAnchor): void {
+  flash(anchor: LiveAnchor, colorToken: ColorToken): void {
     if (!this.isSupported) {
       return;
     }
@@ -127,12 +162,17 @@ export class HighlightController {
       window.clearTimeout(this.activeHighlightTimer);
     }
 
+    for (const activeColorToken of COLOR_TOKENS) {
+      CSS.highlights.delete(getActiveHighlightName(activeColorToken));
+    }
+
     const activeHighlight = new Highlight(anchor.range.cloneRange());
     activeHighlight.priority = 2;
-    CSS.highlights.set(ACTIVE_HIGHLIGHT_NAME, activeHighlight);
+    const activeHighlightName = getActiveHighlightName(colorToken);
+    CSS.highlights.set(activeHighlightName, activeHighlight);
 
     this.activeHighlightTimer = window.setTimeout(() => {
-      CSS.highlights.delete(ACTIVE_HIGHLIGHT_NAME);
+      CSS.highlights.delete(activeHighlightName);
       this.activeHighlightTimer = null;
     }, ACTIVE_HIGHLIGHT_DURATION_MS);
   }
