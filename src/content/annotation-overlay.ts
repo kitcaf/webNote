@@ -9,6 +9,7 @@ import {
   ANNOTATION_RESIZE_HANDLE_SIZE_PX
 } from "../shared/constants";
 import type { PageKey, WebAnnotationEntity } from "../shared/types";
+import { isExpectedRuntimeLifecycleError } from "./runtime-errors";
 
 interface AnnotationOverlayHandlers {
   onDelete: (annotationId: string) => Promise<void>;
@@ -101,18 +102,13 @@ const injectOverlayStyles = (): void => {
       min-height: ${MIN_EDITOR_HEIGHT_PX}px;
       padding: 8px ${ANNOTATION_RESIZE_HANDLE_SIZE_PX + 16}px ${ANNOTATION_RESIZE_HANDLE_SIZE_PX + 12}px 12px;
       border-radius: inherit;
-      background: linear-gradient(180deg, rgba(255, 255, 255, 0.68), rgba(255, 255, 255, 0.4));
+      background: transparent;
     }
 
     .webnote-annotation-layer--interactive .webnote-annotation-text:hover {
       outline: 1px dashed rgba(37, 99, 235, 0.32);
       outline-offset: 4px;
-      box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
       transform: translateY(-1px);
-    }
-
-    .webnote-annotation-text--dragging {
-      box-shadow: 0 14px 28px rgba(15, 23, 42, 0.12);
     }
 
     .webnote-annotation-text__delete {
@@ -198,8 +194,7 @@ const injectOverlayStyles = (): void => {
       outline: 1px dashed rgba(37, 99, 235, 0.3);
       outline-offset: 4px;
       border-radius: 12px;
-      background: linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(255, 255, 255, 0.46));
-      box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+      background: transparent;
     }
 
     .webnote-annotation-editor__input {
@@ -275,15 +270,11 @@ const autosizeEditor = (editorElement: HTMLTextAreaElement): void => {
 };
 
 const safeRemoveElement = (element: Element | null | undefined): void => {
-  if (!element || !element.parentNode) {
+  if (!element) {
     return;
   }
 
-  try {
-    element.parentNode.removeChild(element);
-  } catch (error) {
-    console.warn("WebNote skipped removing an annotation element that was already detached.", error);
-  }
+  element.remove();
 };
 
 const createResizeHandleElement = (): HTMLButtonElement => {
@@ -365,7 +356,7 @@ export class AnnotationOverlay {
 
     const gripElement = document.createElement("span");
     gripElement.className = "webnote-annotation-text__grip";
-    gripElement.textContent = "Drag";
+    // gripElement.textContent = "Drag";
     const contentElement = document.createElement("span");
     contentElement.className = "webnote-annotation-text__content";
     contentElement.textContent = annotation.content;
@@ -388,6 +379,10 @@ export class AnnotationOverlay {
           this.removeAnnotation(annotation.id);
         })
         .catch((error) => {
+          if (isExpectedRuntimeLifecycleError(error)) {
+            return;
+          }
+
           console.error("WebNote failed to delete the page annotation.", error);
         });
     });
@@ -710,6 +705,10 @@ export class AnnotationOverlay {
       this.annotations.set(savedAnnotation.id, savedAnnotation);
       this.upsertAnnotation(savedAnnotation);
     } catch (error) {
+      if (isExpectedRuntimeLifecycleError(error)) {
+        return;
+      }
+
       console.error("WebNote failed to persist the annotation layout.", error);
       this.upsertAnnotation(annotation);
     }
@@ -879,7 +878,9 @@ export class AnnotationOverlay {
         this.upsertAnnotation(savedAnnotation);
       }
     } catch (error) {
-      console.error("WebNote failed to commit the page annotation.", error);
+      if (!isExpectedRuntimeLifecycleError(error)) {
+        console.error("WebNote failed to commit the page annotation.", error);
+      }
 
       if (!options.preserveEditor && draftState.annotationId) {
         const existingAnnotation = this.annotations.get(draftState.annotationId);

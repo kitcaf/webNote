@@ -7,6 +7,7 @@ import type { BasicResponse, RuntimeMessage } from "../shared/protocol";
 import { createWebAnnotationEntity } from "../shared/serialization";
 import type { PageKey, PageRecord, WebAnnotationEntity } from "../shared/types";
 import { AnnotationOverlay } from "./annotation-overlay";
+import { isExpectedRuntimeLifecycleError } from "./runtime-errors";
 
 const clampPreferredWidth = (width: number): number => Math.max(Math.round(width), ANNOTATION_MIN_WIDTH_PX);
 
@@ -102,12 +103,22 @@ export class AnnotationController {
           y: input.y
         });
 
-    const response = (await chrome.runtime.sendMessage({
-      type: "content/upsert-annotation",
-      payload: {
-        annotation: nextAnnotation
+    let response: BasicResponse;
+
+    try {
+      response = (await chrome.runtime.sendMessage({
+        type: "content/upsert-annotation",
+        payload: {
+          annotation: nextAnnotation
+        }
+      } satisfies RuntimeMessage)) as BasicResponse;
+    } catch (error) {
+      if (isExpectedRuntimeLifecycleError(error)) {
+        throw error;
       }
-    } satisfies RuntimeMessage)) as BasicResponse;
+
+      throw error;
+    }
 
     if (!response.ok) {
       throw new Error(response.reason ?? "Failed to save the web annotation.");
@@ -125,13 +136,23 @@ export class AnnotationController {
       return;
     }
 
-    const response = (await chrome.runtime.sendMessage({
-      type: "content/delete-annotation",
-      payload: {
-        annotationId,
-        pageKey: annotation.pageKey
+    let response: BasicResponse;
+
+    try {
+      response = (await chrome.runtime.sendMessage({
+        type: "content/delete-annotation",
+        payload: {
+          annotationId,
+          pageKey: annotation.pageKey
+        }
+      } satisfies RuntimeMessage)) as BasicResponse;
+    } catch (error) {
+      if (isExpectedRuntimeLifecycleError(error)) {
+        throw error;
       }
-    } satisfies RuntimeMessage)) as BasicResponse;
+
+      throw error;
+    }
 
     if (!response.ok) {
       throw new Error(response.reason ?? "Failed to delete the web annotation.");
@@ -151,6 +172,10 @@ export class AnnotationController {
 
       this.updatePreferredWidth(candidateWidth);
     } catch (error) {
+      if (isExpectedRuntimeLifecycleError(error)) {
+        return;
+      }
+
       console.warn("WebNote failed to load the preferred annotation width.", error);
     }
   }
@@ -170,6 +195,10 @@ export class AnnotationController {
         [ANNOTATION_WIDTH_PREFERENCE_STORAGE_KEY]: this.preferredWidth
       })
       .catch((error) => {
+        if (isExpectedRuntimeLifecycleError(error)) {
+          return;
+        }
+
         console.warn("WebNote failed to persist the preferred annotation width.", error);
       });
   }
