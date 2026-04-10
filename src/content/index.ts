@@ -19,14 +19,6 @@ const annotationController = new AnnotationController();
 const pageToolbar = new PageToolbar({
   onModeChange: (mode) => {
     modeController.setMode(mode);
-  },
-  onOpenSidePanel: async () => {
-    noteController.clearBrowserSelection();
-    annotationController.cancelDraft();
-
-    await chrome.runtime.sendMessage({
-      type: "content/open-side-panel"
-    } satisfies RuntimeMessage);
   }
 });
 const noteController = new NoteController({
@@ -68,8 +60,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
     case "content/capture-selection":
       void noteController.createFromLiveSelection({
         enqueueInsert: true,
-        kind: "excerpt",
-        openSidePanel: true
+        kind: "excerpt"
       }).then(sendResponse);
       return true;
 

@@ -1,11 +1,10 @@
 {
   "manifest_version": 3,
   "name": "WebNote",
-  "description": "Capture quotes from the web and write notes in a side panel.",
+  "description": "Capture quotes from the web and annotate pages.",
   "version": "0.1.0",
   "permissions": [
     "contextMenus",
-    "sidePanel",
     "storage",
     "tabs"
   ],
@@ -19,9 +18,6 @@
   "background": {
     "service_worker": "background.js",
     "type": "module"
-  },
-  "side_panel": {
-    "default_path": "sidepanel.html"
   },
   "commands": {
     "capture-selection": {

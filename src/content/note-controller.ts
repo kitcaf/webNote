@@ -19,7 +19,6 @@ import { captureSelection, type CapturedSelection } from "./selection";
 interface CreateNoteOptions {
   enqueueInsert: boolean;
   kind: NoteKind;
-  openSidePanel: boolean;
 }
 
 interface NoteControllerOptions {
@@ -209,8 +208,7 @@ export class NoteController {
 
       void this.createFromCapturedSelection(capturedSelection, {
         enqueueInsert: false,
-        kind: "highlight",
-        openSidePanel: false
+        kind: "highlight"
       }).then((response) => {
         if (!response.ok && response.reason !== "No active text selection was found.") {
           console.error("WebNote failed to create a highlight.", response.reason);

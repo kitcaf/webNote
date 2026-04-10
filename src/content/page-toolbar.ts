@@ -2,7 +2,6 @@ export type PageToolMode = "highlight" | "annotation" | null;
 
 interface PageToolbarHandlers {
   onModeChange: (mode: PageToolMode) => void;
-  onOpenSidePanel: () => Promise<void>;
 }
 
 const TOOLBAR_STYLE_ID = "webnote-page-toolbar-style";
@@ -120,17 +119,10 @@ const ANNOTATION_ICON_PATHS = [
   "M6 15.25h7.5",
   "m15.5 15.25 1.75 1.75L21 13.25"
 ];
-const SIDEPANEL_ICON_PATHS = [
-  "M4.75 5.5h14.5",
-  "M8.25 5.5v13",
-  "M4.75 18.5h14.5"
-];
-
 export class PageToolbar {
   private readonly root: HTMLDivElement;
   private readonly highlightButton: HTMLButtonElement;
   private readonly annotationButton: HTMLButtonElement;
-  private readonly sidePanelButton: HTMLButtonElement;
   private activeMode: PageToolMode = null;
 
   constructor(private readonly handlers: PageToolbarHandlers) {
@@ -150,13 +142,8 @@ export class PageToolbar {
       ANNOTATION_ICON_PATHS,
       "annotation"
     );
-    this.sidePanelButton = this.createActionButton(
-      "Open side panel",
-      SIDEPANEL_ICON_PATHS,
-      () => this.handlers.onOpenSidePanel()
-    );
 
-    this.root.append(this.highlightButton, this.annotationButton, this.sidePanelButton);
+    this.root.append(this.highlightButton, this.annotationButton);
     document.body.append(this.root);
   }
 

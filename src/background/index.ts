@@ -1,30 +1,22 @@
 import {
   CAPTURE_COMMAND,
-  CONTEXT_MENU_ID,
-  SIDEPANEL_PORT_NAME
+  CONTEXT_MENU_ID
 } from "../shared/constants";
 import type {
   BasicResponse,
   PageRecordResponse,
   RuntimeMessage
 } from "../shared/protocol";
-import { createPageDescriptor } from "../shared/serialization";
-import type { PageDescriptor, PageViewState } from "../shared/types";
+import type { PageViewState } from "../shared/types";
 import {
-  deleteNote,
   deleteAnnotation,
-  flushPendingInserts,
-  getPendingInserts,
-  getPageRecord,
+  deleteNote,
   getOrCreatePageRecord,
   replaceAnnotations,
-  saveDocument,
   upsertAnnotation,
   upsertNote
 } from "./storage";
 
-const trackedPagesByTab = new Map<number, PageDescriptor>();
-const sidePanelPorts = new Set<chrome.runtime.Port>();
 const NO_RECEIVER_ERROR_FRAGMENT = "Receiving end does not exist";
 const MESSAGE_PORT_CLOSED_ERROR_FRAGMENT = "The message port closed before a response was received";
 
@@ -45,16 +37,6 @@ const ensureContextMenu = async (): Promise<void> => {
   });
 };
 
-const ensureSidePanelBehavior = async (): Promise<void> => {
-  if (!chrome.sidePanel?.setPanelBehavior) {
-    return;
-  }
-
-  await chrome.sidePanel.setPanelBehavior({
-    openPanelOnActionClick: true
-  });
-};
-
 const getActiveTab = async (): Promise<chrome.tabs.Tab | null> => {
   const tabs = await chrome.tabs.query({
     active: true,
@@ -62,52 +44,6 @@ const getActiveTab = async (): Promise<chrome.tabs.Tab | null> => {
   });
 
   return tabs[0] ?? null;
-};
-
-const getPageForTab = async (tab: chrome.tabs.Tab | null): Promise<PageDescriptor | null> => {
-  if (!tab?.id || !isSupportedUrl(tab.url)) {
-    return null;
-  }
-
-  const trackedPage = trackedPagesByTab.get(tab.id);
-  const fallbackPage = createPageDescriptor(tab.url, tab.title ?? "");
-
-  if (trackedPage && trackedPage.key === fallbackPage.key) {
-    return trackedPage;
-  }
-
-  return fallbackPage;
-};
-
-const getActivePageState = async (): Promise<PageViewState> => {
-  const activeTab = await getActiveTab();
-
-  if (!activeTab?.id) {
-    return {
-      pendingInserts: [],
-      pageRecord: null,
-      tabId: null
-    };
-  }
-
-  const page = await getPageForTab(activeTab);
-
-  if (!page) {
-    return {
-      pendingInserts: [],
-      pageRecord: null,
-      tabId: activeTab.id
-    };
-  }
-
-  const existingPageRecord = await getPageRecord(page.key);
-  const pageRecord = existingPageRecord ?? (await getOrCreatePageRecord(page));
-
-  return {
-    pendingInserts: getPendingInserts(page.key),
-    pageRecord,
-    tabId: activeTab.id
-  };
 };
 
 const getErrorMessage = (error: unknown): string => {
@@ -139,25 +75,6 @@ const isNoReceiverError = (error: unknown): boolean => {
   );
 };
 
-const broadcastToSidePanelPorts = (message: RuntimeMessage): void => {
-  for (const port of sidePanelPorts) {
-    try {
-      port.postMessage(message);
-    } catch (error) {
-      console.error("Failed to notify the side panel.", error);
-      sidePanelPorts.delete(port);
-    }
-  }
-};
-
-const broadcastActivePage = async (): Promise<void> => {
-  const state = await getActivePageState();
-  broadcastToSidePanelPorts({
-    type: "background/page-updated",
-    payload: state
-  } satisfies RuntimeMessage);
-};
-
 const sendTabMessage = async (tabId: number, message: RuntimeMessage): Promise<boolean> => {
   try {
     await chrome.tabs.sendMessage(tabId, message);
@@ -185,34 +102,11 @@ const requestSelectionCapture = async (tabId: number): Promise<void> => {
   }
 };
 
-const openPanel = async (tabId: number): Promise<void> => {
-  if (!chrome.sidePanel?.open) {
-    return;
-  }
-
-  try {
-    await chrome.sidePanel.open({ tabId });
-  } catch (error) {
-    console.error("Failed to open the side panel.", error);
-  }
-};
-
-const locateTabForPageKey = async (pageKey: string): Promise<number | null> => {
-  const activeTab = await getActiveTab();
-  const trackedActiveKey = activeTab?.id ? trackedPagesByTab.get(activeTab.id)?.key : null;
-
-  if (activeTab?.id && trackedActiveKey === pageKey) {
-    return activeTab.id;
-  }
-
-  for (const [tabId, page] of trackedPagesByTab.entries()) {
-    if (page.key === pageKey) {
-      return tabId;
-    }
-  }
-
-  return activeTab?.id ?? null;
-};
+const createPageState = (pageRecord: Awaited<ReturnType<typeof getOrCreatePageRecord>>, tabId: number | null): PageViewState => ({
+  pageRecord,
+  pendingInserts: [],
+  tabId
+});
 
 const handleBackgroundMessage = async (
   message: RuntimeMessage,
@@ -221,140 +115,38 @@ const handleBackgroundMessage = async (
   switch (message.type) {
     case "content/page-ready":
     case "content/page-changed": {
-      if (sender.tab?.id) {
-        trackedPagesByTab.set(sender.tab.id, message.payload.page);
-      }
-
       const pageRecord = await getOrCreatePageRecord(message.payload.page);
-      const pageState: PageViewState = {
-        pendingInserts: getPendingInserts(message.payload.page.key),
-        pageRecord,
-        tabId: sender.tab?.id ?? null
-      };
-
-      if (sender.tab?.active) {
-        await broadcastActivePage();
-      }
 
       return {
         ok: true,
-        pageState
+        pageState: createPageState(pageRecord, sender.tab?.id ?? null)
       };
     }
 
     case "content/create-note": {
-      const shouldOpenSidePanel = message.payload.options?.openSidePanel ?? true;
       await upsertNote(message.payload.note, {
         enqueueInsert: message.payload.options?.enqueueInsert ?? true
       });
-
-      if (sender.tab?.id) {
-        trackedPagesByTab.set(sender.tab.id, {
-          key: message.payload.note.pageKey,
-          title: message.payload.note.pageTitle,
-          url: message.payload.note.pageUrl,
-          sourceUrl: sender.tab.url ?? message.payload.note.pageUrl,
-          lastSeenAt: message.payload.note.updatedAt
-        });
-
-        if (shouldOpenSidePanel) {
-          await openPanel(sender.tab.id);
-        }
-      }
-
-      await broadcastActivePage();
-
-      return { ok: true };
-    }
-
-    case "content/open-side-panel": {
-      if (sender.tab?.id) {
-        await openPanel(sender.tab.id);
-      }
-
       return { ok: true };
     }
 
     case "content/upsert-annotation": {
       await upsertAnnotation(message.payload.annotation);
-      await broadcastActivePage();
       return { ok: true };
     }
 
     case "content/delete-annotation": {
       await deleteAnnotation(message.payload.pageKey, message.payload.annotationId);
-      await broadcastActivePage();
       return { ok: true };
     }
 
     case "content/replace-annotations": {
       await replaceAnnotations(message.payload.pageKey, message.payload.annotations);
-      await broadcastActivePage();
       return { ok: true };
     }
 
     case "content/delete-note": {
       await deleteNote(message.payload.pageKey, message.payload.noteId);
-      await broadcastActivePage();
-      return { ok: true };
-    }
-
-    case "panel/bootstrap": {
-      const state = await getActivePageState();
-      return {
-        ok: true,
-        pageState: state
-      };
-    }
-
-    case "panel/save-document": {
-      const pageRecord = await saveDocument(message.payload.pageKey, message.payload.markdown);
-      return {
-        ok: true,
-        reason: pageRecord ? undefined : "No page record found for the requested document."
-      };
-    }
-
-    case "panel/flush-pending": {
-      await flushPendingInserts(message.payload.pageKey, message.payload.noteIds);
-      await broadcastActivePage();
-      return { ok: true };
-    }
-
-    case "panel/open-source": {
-      const tabId = await locateTabForPageKey(message.payload.pageKey);
-
-      if (!tabId) {
-        return {
-          ok: false,
-          reason: "Could not find an open tab for the requested page."
-        };
-      }
-
-      try {
-        await chrome.tabs.update(tabId, {
-          active: true
-        });
-
-        const didDeliver = await sendTabMessage(tabId, {
-          type: "content/activate-note",
-          payload: message.payload
-        } satisfies RuntimeMessage);
-
-        if (!didDeliver) {
-          return {
-            ok: false,
-            reason: "The target page is still loading and cannot receive note navigation yet."
-          };
-        }
-      } catch (error) {
-        console.error("Failed to locate the source quote in the page.", error);
-        return {
-          ok: false,
-          reason: "Failed to send the navigation request to the page."
-        };
-      }
-
       return { ok: true };
     }
 
@@ -365,12 +157,10 @@ const handleBackgroundMessage = async (
 
 chrome.runtime.onInstalled.addListener(() => {
   void ensureContextMenu();
-  void ensureSidePanelBehavior();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   void ensureContextMenu();
-  void ensureSidePanelBehavior();
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
@@ -390,35 +180,6 @@ chrome.commands.onCommand.addListener((command) => {
     if (activeTab?.id) {
       void requestSelectionCapture(activeTab.id);
     }
-  });
-});
-
-chrome.tabs.onActivated.addListener(() => {
-  void broadcastActivePage();
-});
-
-chrome.tabs.onRemoved.addListener((tabId) => {
-  trackedPagesByTab.delete(tabId);
-});
-
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === "loading") {
-    trackedPagesByTab.delete(tabId);
-  }
-
-  if (changeInfo.status === "complete" && tab.active) {
-    void broadcastActivePage();
-  }
-});
-
-chrome.runtime.onConnect.addListener((port) => {
-  if (port.name !== SIDEPANEL_PORT_NAME) {
-    return;
-  }
-
-  sidePanelPorts.add(port);
-  port.onDisconnect.addListener(() => {
-    sidePanelPorts.delete(port);
   });
 });
 

@@ -2,7 +2,6 @@ import type {
   NoteEntity,
   PageDescriptor,
   PageKey,
-  PageRecord,
   PageViewState,
   WebAnnotationEntity
 } from "./types";
@@ -27,17 +26,12 @@ export interface ContentCreateNoteMessage {
     note: NoteEntity;
     options?: {
       enqueueInsert?: boolean;
-      openSidePanel?: boolean;
     };
   };
 }
 
 export interface ContentCaptureSelectionMessage {
   type: "content/capture-selection";
-}
-
-export interface ContentOpenSidePanelMessage {
-  type: "content/open-side-panel";
 }
 
 export interface ContentUpsertAnnotationMessage {
@@ -79,55 +73,16 @@ export interface ContentActivateNoteMessage {
   };
 }
 
-export interface PanelBootstrapMessage {
-  type: "panel/bootstrap";
-}
-
-export interface PanelSaveDocumentMessage {
-  type: "panel/save-document";
-  payload: {
-    pageKey: PageKey;
-    markdown: string;
-  };
-}
-
-export interface PanelFlushPendingMessage {
-  type: "panel/flush-pending";
-  payload: {
-    pageKey: PageKey;
-    noteIds: string[];
-  };
-}
-
-export interface PanelOpenSourceMessage {
-  type: "panel/open-source";
-  payload: {
-    pageKey: PageKey;
-    noteId: string;
-  };
-}
-
-export interface BackgroundPageUpdatedMessage {
-  type: "background/page-updated";
-  payload: PageViewState;
-}
-
 export type RuntimeMessage =
-  | BackgroundPageUpdatedMessage
   | ContentActivateNoteMessage
   | ContentCaptureSelectionMessage
   | ContentCreateNoteMessage
   | ContentDeleteAnnotationMessage
   | ContentDeleteNoteMessage
-  | ContentOpenSidePanelMessage
   | ContentPageChangedMessage
   | ContentPageReadyMessage
   | ContentReplaceAnnotationsMessage
-  | ContentUpsertAnnotationMessage
-  | PanelBootstrapMessage
-  | PanelFlushPendingMessage
-  | PanelOpenSourceMessage
-  | PanelSaveDocumentMessage;
+  | ContentUpsertAnnotationMessage;
 
 export interface BasicResponse {
   ok: boolean;
