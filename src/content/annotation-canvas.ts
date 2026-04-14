@@ -11,6 +11,7 @@ import {
   applyAnnotationColor,
   applyAnnotationFrame,
   createResizeHandleElement,
+  ensureOverlayElementAttached,
   injectAnnotationStyles,
   removeElementSafely,
   type AnnotationFrame
@@ -34,6 +35,7 @@ interface AnnotationCardView {
 }
 
 export class AnnotationCanvas {
+  private readonly attachmentObserver: MutationObserver;
   private readonly cardViews = new Map<string, AnnotationCardView>();
   private readonly layer: HTMLDivElement;
   private hiddenAnnotationId: string | null = null;
@@ -43,10 +45,20 @@ export class AnnotationCanvas {
     this.layer = document.createElement("div");
     this.layer.className = ANNOTATION_CANVAS_CLASS;
     this.layer.dataset.webnoteOverlay = "true";
-    document.body.append(this.layer);
+    this.ensureAttached();
+    this.attachmentObserver = new MutationObserver(() => {
+      if (!this.layer.isConnected) {
+        this.ensureAttached();
+      }
+    });
+    this.attachmentObserver.observe(document.documentElement, {
+      childList: true,
+      subtree: true
+    });
   }
 
   dispose(): void {
+    this.attachmentObserver.disconnect();
     removeElementSafely(this.layer);
     this.cardViews.clear();
     this.hiddenAnnotationId = null;
@@ -56,7 +68,12 @@ export class AnnotationCanvas {
     return target instanceof Node && this.layer.contains(target);
   }
 
+  ensureAttached(): void {
+    ensureOverlayElementAttached(this.layer);
+  }
+
   previewAnnotation(annotationId: string, frame: AnnotationFrame): void {
+    this.ensureAttached();
     const cardView = this.cardViews.get(annotationId);
 
     if (!cardView) {
@@ -83,6 +100,7 @@ export class AnnotationCanvas {
   }
 
   setAnnotations(annotations: Iterable<WebAnnotationEntity>): void {
+    this.ensureAttached();
     const nextAnnotationIds = new Set<string>();
 
     for (const annotation of annotations) {
@@ -114,10 +132,12 @@ export class AnnotationCanvas {
   }
 
   setInteractive(interactive: boolean): void {
+    this.ensureAttached();
     this.layer.classList.toggle(ANNOTATION_CANVAS_INTERACTIVE_CLASS, interactive);
   }
 
   syncAnnotation(annotation: WebAnnotationEntity): void {
+    this.ensureAttached();
     const cardView = this.cardViews.get(annotation.id) ?? this.createCardView(annotation.id);
     cardView.contentElement.textContent = annotation.content;
     cardView.rootElement.classList.remove(ANNOTATION_CARD_PREVIEW_CLASS);
@@ -127,6 +147,7 @@ export class AnnotationCanvas {
   }
 
   private createCardView(annotationId: string): AnnotationCardView {
+    this.ensureAttached();
     const rootElement = document.createElement("div");
     rootElement.className = ANNOTATION_CARD_CLASS;
     rootElement.dataset.webnoteOverlay = "true";

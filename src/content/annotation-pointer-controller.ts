@@ -1,7 +1,7 @@
 import { ANNOTATION_DRAG_THRESHOLD_PX } from "../shared/constants";
 import {
   ANNOTATION_CURSOR_CLASS,
-  normalizeAnnotationFrame,
+  constrainInteractiveAnnotationFrame,
   type AnnotationFrame
 } from "./annotation-dom";
 
@@ -57,7 +57,7 @@ export class AnnotationPointerController {
         return;
       }
 
-      const nextFrame = normalizeAnnotationFrame(
+      const nextFrame = constrainInteractiveAnnotationFrame(
         activeSession.target === "body"
           ? {
               width: activeSession.originFrame.width,

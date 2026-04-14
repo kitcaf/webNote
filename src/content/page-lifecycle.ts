@@ -4,6 +4,7 @@ import type { PageDescriptor, PageViewState } from "../shared/types";
 
 interface PageLifecycleCoordinatorOptions {
   onPageChange: (page: PageDescriptor) => void;
+  onPageStateChange: (pageState: PageViewState) => void;
   onPageStateReady: (pageState: PageViewState) => void;
   pageRoot: HTMLElement;
 }
@@ -121,6 +122,7 @@ export class PageLifecycleCoordinator {
     }
 
     this.currentPageState = pageState;
+    this.options.onPageStateChange(this.currentPageState);
     this.startDomRebuildObservation();
     this.scheduleStableHydration();
   }

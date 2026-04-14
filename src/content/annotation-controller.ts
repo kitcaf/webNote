@@ -10,7 +10,7 @@ import {
 } from "../shared/colors";
 import type { PageKey, PageRecord, WebAnnotationEntity } from "../shared/types";
 import { AnnotationCanvas } from "./annotation-canvas";
-import { normalizeAnnotationFrame, type AnnotationFrame } from "./annotation-dom";
+import { constrainInteractiveAnnotationFrame, type AnnotationFrame } from "./annotation-dom";
 import { AnnotationEditor } from "./annotation-editor";
 import {
   AnnotationPersistence,
@@ -41,6 +41,28 @@ const cloneFrame = (frame: AnnotationFrame): AnnotationFrame => ({
   y: frame.y
 });
 
+const buildAnnotationHydrationSnapshot = (pageRecord: PageRecord | null): string =>
+  JSON.stringify(
+    pageRecord
+      ? {
+          annotations: pageRecord.annotations.map((annotation) => ({
+            colorToken: annotation.colorToken,
+            content: annotation.content,
+            id: annotation.id,
+            pageKey: annotation.pageKey,
+            updatedAt: annotation.updatedAt,
+            width: annotation.width,
+            x: annotation.x,
+            y: annotation.y
+          })),
+          pageKey: pageRecord.page.key
+        }
+      : {
+          annotations: [],
+          pageKey: null
+        }
+  );
+
 export class AnnotationController {
   private readonly canvas: AnnotationCanvas;
   private readonly commitRequests = new Map<string, Promise<AnnotationCommitResult>>();
@@ -51,6 +73,7 @@ export class AnnotationController {
   private readonly store = new AnnotationStore();
   private autosaveTimer: number | null = null;
   private currentPageKey: PageKey | null = null;
+  private hydratedAnnotationSnapshot = buildAnnotationHydrationSnapshot(null);
   private interactive = false;
   private preferredColorToken = DEFAULT_ANNOTATION_COLOR_TOKEN;
   private preferredWidth = ANNOTATION_DEFAULT_WIDTH_PX;
@@ -132,14 +155,25 @@ export class AnnotationController {
     }
 
     this.currentPageKey = pageKey;
+    this.hydratedAnnotationSnapshot = buildAnnotationHydrationSnapshot(null);
     this.resetRuntimeState();
     this.store.clear();
     this.canvas.setAnnotations([]);
   }
 
   hydrate(pageRecord: PageRecord | null): void {
+    this.canvas.ensureAttached();
+    this.editor.ensureAttached();
+
+    const nextHydratedSnapshot = buildAnnotationHydrationSnapshot(pageRecord);
+
+    if (this.hydratedAnnotationSnapshot === nextHydratedSnapshot) {
+      return;
+    }
+
     this.resetRuntimeState();
     this.store.clear();
+    this.hydratedAnnotationSnapshot = nextHydratedSnapshot;
 
     if (!pageRecord) {
       this.canvas.setAnnotations([]);
@@ -160,7 +194,7 @@ export class AnnotationController {
       const session = this.stateMachine.openDraft({
         colorToken: this.preferredColorToken,
         draftText: "",
-        frame: normalizeAnnotationFrame({
+        frame: constrainInteractiveAnnotationFrame({
           width: this.preferredWidth,
           x: pageX,
           y: pageY

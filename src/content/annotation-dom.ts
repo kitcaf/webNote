@@ -245,6 +245,25 @@ export const autosizeAnnotationEditor = (editorElement: HTMLTextAreaElement): vo
   editorElement.style.height = `${Math.max(MIN_EDITOR_HEIGHT_PX, editorElement.scrollHeight)}px`;
 };
 
+const getOverlayMountTarget = (): HTMLElement => document.body ?? document.documentElement;
+
+const normalizeAnnotationFrameBase = (frame: AnnotationFrame): AnnotationFrame => ({
+  width: Math.max(Math.round(frame.width), ANNOTATION_MIN_WIDTH_PX),
+  x: Math.round(frame.x),
+  y: Math.round(frame.y)
+});
+
+export const ensureOverlayElementAttached = (element: HTMLElement): void => {
+  injectAnnotationStyles();
+  const mountTarget = getOverlayMountTarget();
+
+  if (element.parentElement === mountTarget) {
+    return;
+  }
+
+  mountTarget.append(element);
+};
+
 export const applyAnnotationColor = (
   element: HTMLElement,
   colorToken: ColorToken
@@ -259,20 +278,21 @@ export const applyAnnotationColor = (
   return normalizedColorToken;
 };
 
-export const normalizeAnnotationFrame = (frame: AnnotationFrame): AnnotationFrame => {
-  const width = Math.max(Math.round(frame.width), ANNOTATION_MIN_WIDTH_PX);
-  const x = Math.max(window.scrollX + EDGE_PADDING_PX, Math.round(frame.x));
-  const y = Math.max(window.scrollY + TOP_PADDING_PX, Math.round(frame.y));
+export const constrainInteractiveAnnotationFrame = (frame: AnnotationFrame): AnnotationFrame => {
+  const normalizedFrame = normalizeAnnotationFrameBase(frame);
 
   return {
-    width,
-    x,
-    y
+    ...normalizedFrame,
+    x: Math.max(EDGE_PADDING_PX, normalizedFrame.x),
+    y: Math.max(TOP_PADDING_PX, normalizedFrame.y)
   };
 };
 
+export const normalizeStoredAnnotationFrame = (frame: AnnotationFrame): AnnotationFrame =>
+  normalizeAnnotationFrameBase(frame);
+
 export const applyAnnotationFrame = (element: HTMLElement, frame: AnnotationFrame): AnnotationFrame => {
-  const nextFrame = normalizeAnnotationFrame(frame);
+  const nextFrame = normalizeStoredAnnotationFrame(frame);
   element.style.left = `${nextFrame.x}px`;
   element.style.top = `${nextFrame.y}px`;
   element.style.width = `${nextFrame.width}px`;

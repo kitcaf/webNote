@@ -6,6 +6,7 @@ import {
   autosizeAnnotationEditor,
   createEditorInputElement,
   createResizeHandleElement,
+  ensureOverlayElementAttached,
   injectAnnotationStyles,
   removeElementSafely,
   type AnnotationFrame
@@ -21,6 +22,7 @@ interface AnnotationEditorHandlers {
 }
 
 export class AnnotationEditor {
+  private readonly attachmentObserver: MutationObserver;
   private readonly editorElement: HTMLTextAreaElement;
   private readonly rootElement: HTMLDivElement;
   private isOpen = false;
@@ -74,7 +76,16 @@ export class AnnotationEditor {
     });
 
     this.rootElement.append(this.editorElement, resizeHandleElement);
-    document.body.append(this.rootElement);
+    this.ensureAttached();
+    this.attachmentObserver = new MutationObserver(() => {
+      if (!this.rootElement.isConnected) {
+        this.ensureAttached();
+      }
+    });
+    this.attachmentObserver.observe(document.documentElement, {
+      childList: true,
+      subtree: true
+    });
   }
 
   close(): void {
@@ -93,6 +104,7 @@ export class AnnotationEditor {
 
   dispose(): void {
     this.close();
+    this.attachmentObserver.disconnect();
     removeElementSafely(this.rootElement);
   }
 
@@ -109,7 +121,12 @@ export class AnnotationEditor {
     return target instanceof Node && this.rootElement.contains(target);
   }
 
+  ensureAttached(): void {
+    ensureOverlayElementAttached(this.rootElement);
+  }
+
   open(session: AnnotationSession): void {
+    this.ensureAttached();
     this.isOpen = true;
     this.rootElement.classList.add(ANNOTATION_EDITOR_OPEN_CLASS);
     this.setColorToken(session.colorToken);
@@ -132,6 +149,7 @@ export class AnnotationEditor {
   }
 
   updateFrame(frame: AnnotationFrame): void {
+    this.ensureAttached();
     applyAnnotationFrame(this.rootElement, frame);
   }
 }

@@ -71,9 +71,11 @@ pageLifecycleCoordinator = new PageLifecycleCoordinator({
     noteController.hydrate(null);
     annotationController.hydrate(null);
   },
+  onPageStateChange: (pageState) => {
+    annotationController.hydrate(pageState.pageRecord);
+  },
   onPageStateReady: (pageState) => {
     noteController.hydrate(pageState.pageRecord);
-    annotationController.hydrate(pageState.pageRecord);
   }
 });
 
